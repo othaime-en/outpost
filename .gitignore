@@ -32,12 +32,16 @@ dist-ssr/
 .eslintcache
 
 # --- Terraform ---
+terraform/.terraform/
+terraform/**/.terraform/
 .terraform/
 .terraform.lock.hcl
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
 *.tfvars          # May contain secrets — never commit
 .terraformignore
+!*.tfvars.example
 crash.log
 override.tf
 override.tf.json
