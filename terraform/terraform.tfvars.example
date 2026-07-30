@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars for local manual testing (Section 2.7 verification).
+# Never commit terraform.tfvars itself -- add it to .gitignore.
+
+env_id    = "test-0000000000000000"  # any unique string works for local testing
+env_name  = "manual-test"
+team      = "myteam"
+env_type  = "dev"
+ttl_hours = 2
+region    = "us-east-1"
+vpc_id    = "vpc-xxxxxxxx"           # from the bootstrap step
