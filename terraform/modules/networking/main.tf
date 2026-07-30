@@ -58,7 +58,7 @@ resource "aws_security_group" "env" {
   # same per-env SG (i.e. this environment's own ECS task and RDS instance)
   # can talk to each other on Postgres.
   ingress {
-    description = "Postgres, self-referencing (ECS task -> RDS, same env only)"
+    description = "Postgres, self-referencing (ECS task to RDS, same env only)"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
