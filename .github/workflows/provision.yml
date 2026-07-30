@@ -1,0 +1,108 @@
+name: Provision Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_id:
+        description: "UUID for the environment (also the TF state key)"
+        required: true
+        type: string
+      env_name:
+        description: "Human-readable environment name"
+        required: true
+        type: string
+      team:
+        description: "Team slug"
+        required: true
+        type: string
+      env_type:
+        description: "dev or staging"
+        required: true
+        type: string
+      ttl_hours:
+        description: "TTL in hours (tag only — not enforced by Terraform)"
+        required: true
+        type: string
+      region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "us-east-1"
+
+permissions:
+  id-token: write # required for OIDC -> AWS
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=envs/${{ inputs.env_id }}/terraform.tfstate" \
+            -backend-config="region=${{ inputs.region }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve \
+            -var="env_id=${{ inputs.env_id }}" \
+            -var="env_name=${{ inputs.env_name }}" \
+            -var="team=${{ inputs.team }}" \
+            -var="env_type=${{ inputs.env_type }}" \
+            -var="ttl_hours=${{ inputs.ttl_hours }}" \
+            -var="region=${{ inputs.region }}" \
+            -var="vpc_id=${{ secrets.SHARED_VPC_ID }}"
+
+      - name: Extract Outputs
+        # `terraform output -json` nests each value as {"name": {"value": ..., "type": ...}}.
+        # The callback schema (and the Phase 5 runbook template, which reads
+        # outputs.ecs_service_arn etc. directly) expects a flat {"name": value}
+        # map, so flatten it here rather than pushing that translation into the API.
+        if: success()
+        id: outputs
+        working-directory: terraform
+        run: |
+          FLAT=$(terraform output -json | jq -c 'with_entries(.value = .value.value)')
+          echo "outputs=$FLAT" >> "$GITHUB_OUTPUT"
+
+      - name: Callback — Success
+        if: success()
+        run: |
+          PAYLOAD=$(jq -nc \
+            --argjson outputs '${{ steps.outputs.outputs.outputs }}' \
+            '{status: "RUNNING", outputs: $outputs}')
+          curl -sf -X POST \
+            "${{ secrets.CALLBACK_BASE_URL }}/environments/${{ inputs.env_id }}/callback" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "$PAYLOAD"
+
+      - name: Callback — Failure
+        if: failure()
+        run: |
+          PAYLOAD=$(jq -nc \
+            --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{status: "FAILED", error: ("Terraform apply failed. See run: " + $url)}')
+          curl -sf -X POST \
+            "${{ secrets.CALLBACK_BASE_URL }}/environments/${{ inputs.env_id }}/callback" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "$PAYLOAD"
