@@ -39,18 +39,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Preflight — check required secrets
+        # AWS bootstrap (terraform/README.md Section 2.1) hasn't happened yet
+        # in this repo, so AWS_ROLE_ARN and friends aren't set. Rather than
+        # let the OIDC step fail with a confusing "role-to-assume is not
+        # valid" error, detect that up front and skip cleanly with a plain
+        # explanation. Remove this step once the secrets below are set.
+        id: preflight
+        run: |
+          missing=()
+          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing+=("AWS_ROLE_ARN")
+          [ -z "${{ secrets.TF_STATE_BUCKET }}" ] && missing+=("TF_STATE_BUCKET")
+          [ -z "${{ secrets.TF_LOCK_TABLE }}" ] && missing+=("TF_LOCK_TABLE")
+          [ -z "${{ secrets.SHARED_VPC_ID }}" ] && missing+=("SHARED_VPC_ID")
+          [ -z "${{ secrets.CALLBACK_BASE_URL }}" ] && missing+=("CALLBACK_BASE_URL")
+          [ -z "${{ secrets.CALLBACK_SECRET }}" ] && missing+=("CALLBACK_SECRET")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping provision — missing secrets: ${missing[*]}. See .github/workflows/README.md."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure AWS via OIDC
+        if: steps.preflight.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.region }}
 
       - name: Setup Terraform
+        if: steps.preflight.outputs.configured == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.6.0"
 
       - name: Terraform Init
+        if: steps.preflight.outputs.configured == 'true'
         working-directory: terraform
         run: |
           terraform init \
@@ -60,6 +86,7 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
       - name: Terraform Apply
+        if: steps.preflight.outputs.configured == 'true'
         working-directory: terraform
         run: |
           terraform apply -auto-approve \
@@ -76,7 +103,7 @@ jobs:
         # The callback schema (and the Phase 5 runbook template, which reads
         # outputs.ecs_service_arn etc. directly) expects a flat {"name": value}
         # map, so flatten it here rather than pushing that translation into the API.
-        if: success()
+        if: success() && steps.preflight.outputs.configured == 'true'
         id: outputs
         working-directory: terraform
         run: |
@@ -84,7 +111,7 @@ jobs:
           echo "outputs=$FLAT" >> "$GITHUB_OUTPUT"
 
       - name: Callback — Success
-        if: success()
+        if: success() && steps.preflight.outputs.configured == 'true'
         run: |
           PAYLOAD=$(jq -nc \
             --argjson outputs '${{ steps.outputs.outputs.outputs }}' \
@@ -96,7 +123,7 @@ jobs:
             -d "$PAYLOAD"
 
       - name: Callback — Failure
-        if: failure()
+        if: failure() && steps.preflight.outputs.configured == 'true'
         run: |
           PAYLOAD=$(jq -nc \
             --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \

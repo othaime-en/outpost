@@ -13,7 +13,28 @@ jobs:
   enforce-ttl:
     runs-on: ubuntu-latest
     steps:
+      - name: Preflight — check required secrets
+        # This workflow runs on a schedule, so unlike provision.yml/destroy.yml
+        # it fires automatically every 15 minutes regardless of whether anyone
+        # triggered it. It doesn't need AWS secrets (it only calls the API and
+        # dispatches destroy.yml), just the callback ones. Skip cleanly instead
+        # of a failed run (and notification email) every 15 minutes until
+        # those are set. Remove this step once they are.
+        id: preflight
+        run: |
+          missing=()
+          [ -z "${{ secrets.CALLBACK_BASE_URL }}" ] && missing+=("CALLBACK_BASE_URL")
+          [ -z "${{ secrets.CALLBACK_SECRET }}" ] && missing+=("CALLBACK_SECRET")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping TTL enforcement — missing secrets: ${missing[*]}. See .github/workflows/README.md."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Fetch expired environments
+        if: steps.preflight.outputs.configured == 'true'
         id: expired
         run: |
           RESPONSE=$(curl -sf \
@@ -23,6 +44,7 @@ jobs:
           echo "Expired environments: $RESPONSE"
 
       - name: Trigger destroy for each expired environment
+        if: steps.preflight.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPIRED_JSON: ${{ steps.expired.outputs.envs }}

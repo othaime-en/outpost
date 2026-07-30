@@ -28,18 +28,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Preflight — check required secrets
+        # Same rationale as provision.yml — AWS bootstrap hasn't run yet in
+        # this repo. Skip cleanly instead of failing on the OIDC step.
+        id: preflight
+        run: |
+          missing=()
+          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing+=("AWS_ROLE_ARN")
+          [ -z "${{ secrets.TF_STATE_BUCKET }}" ] && missing+=("TF_STATE_BUCKET")
+          [ -z "${{ secrets.TF_LOCK_TABLE }}" ] && missing+=("TF_LOCK_TABLE")
+          [ -z "${{ secrets.SHARED_VPC_ID }}" ] && missing+=("SHARED_VPC_ID")
+          [ -z "${{ secrets.CALLBACK_BASE_URL }}" ] && missing+=("CALLBACK_BASE_URL")
+          [ -z "${{ secrets.CALLBACK_SECRET }}" ] && missing+=("CALLBACK_SECRET")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping destroy — missing secrets: ${missing[*]}. See .github/workflows/README.md."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure AWS via OIDC
+        if: steps.preflight.outputs.configured == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.region }}
 
       - name: Setup Terraform
+        if: steps.preflight.outputs.configured == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.6.0"
 
       - name: Terraform Init
+        if: steps.preflight.outputs.configured == 'true'
         working-directory: terraform
         run: |
           terraform init \
@@ -49,6 +72,7 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
 
       - name: Terraform Destroy
+        if: steps.preflight.outputs.configured == 'true'
         working-directory: terraform
         # All non-vpc_id variables (env_name, team, env_type, ttl_hours) are
         # only referenced by resource attributes/tags during apply — destroy
@@ -65,7 +89,7 @@ jobs:
             -var="vpc_id=${{ secrets.SHARED_VPC_ID }}"
 
       - name: Callback — Success
-        if: success()
+        if: success() && steps.preflight.outputs.configured == 'true'
         run: |
           PAYLOAD=$(jq -nc --arg actor "${{ inputs.actor }}" '{status: "DESTROYED", actor: $actor}')
           curl -sf -X POST \
@@ -75,7 +99,7 @@ jobs:
             -d "$PAYLOAD"
 
       - name: Callback — Failure
-        if: failure()
+        if: failure() && steps.preflight.outputs.configured == 'true'
         run: |
           PAYLOAD=$(jq -nc \
             --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \

@@ -19,6 +19,30 @@ to be added manually, but the job does need `permissions: actions: write`
 (already set in the workflow) for that token to be allowed to dispatch
 another workflow.
 
+## Current status: AWS bootstrap not done yet
+
+None of the six secrets above are set yet — the AWS account side (Section
+2.1 bootstrap: VPC, S3 bucket, DynamoDB table, OIDC provider, IAM role,
+shared ECS cluster) is still pending. Terraform itself has only been
+validated locally (`terraform validate` / `plan` against local state), not
+applied to real AWS infra.
+
+To avoid `ttl-cron.yml` failing every 15 minutes (it's the only one of the
+three with a `schedule` trigger — `provision.yml` and `destroy.yml` are
+`workflow_dispatch`-only, so they're inert until someone runs them
+manually), all three workflows start with a **preflight step** that checks
+for the required secrets and exits cleanly with an `::notice::` annotation
+if any are missing, instead of letting a downstream step (like the OIDC
+role-assume) fail with a confusing error. Runs will show green with the
+remaining steps skipped, not red.
+
+**Once the AWS bootstrap is done and the secrets above are set, no code
+change is needed** — the preflight step will detect they're present and
+the workflows will run normally. (The preflight step comment in each file
+says "remove this step once configured" — that's optional cleanup, not
+required; leaving it in is harmless and makes future secret rotation/loss
+fail the same graceful way.)
+
 ## Notes specific to this repo's Terraform (see `terraform/README.md`)
 
 - `backend.tf` is intentionally empty (`backend "s3" { encrypt = true }`) —
