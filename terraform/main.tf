@@ -25,10 +25,10 @@ module "networking" {
 module "rds" {
   source = "./modules/rds"
 
-  env_id             = var.env_id
-  subnet_ids         = module.networking.subnet_ids
-  security_group_id  = module.networking.security_group_id
-  common_tags        = local.common_tags
+  env_id            = var.env_id
+  subnet_ids        = module.networking.subnet_ids
+  security_group_id = module.networking.security_group_id
+  common_tags       = local.common_tags
 }
 
 module "secrets" {
@@ -45,11 +45,11 @@ module "secrets" {
 module "ecs" {
   source = "./modules/ecs"
 
-  env_id             = var.env_id
-  region             = var.region
-  subnet_id          = module.networking.subnet_id
-  security_group_id  = module.networking.security_group_id
-  rds_secret_arn     = module.secrets.secret_arn
-  container_image    = var.container_image
-  common_tags        = local.common_tags
+  env_id            = var.env_id
+  region            = var.region
+  subnet_id         = module.networking.subnet_id
+  security_group_id = module.networking.security_group_id
+  rds_secret_arn    = module.secrets.secret_arn
+  container_image   = var.container_image
+  common_tags       = local.common_tags
 }

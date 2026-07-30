@@ -63,7 +63,7 @@ resource "aws_ecs_task_definition" "env" {
   task_role_arn            = aws_iam_role.task.arn
 
   container_definitions = jsonencode([{
-    name = "app"
+    name  = "app"
     image = var.container_image
     portMappings = [{
       containerPort = 8080
