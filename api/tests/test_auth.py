@@ -9,6 +9,7 @@ Covers:
 """
 
 import uuid
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -83,7 +84,7 @@ class TestTeamRBAC:
         )
         assert response.status_code == 403
 
-    def test_super_admin_can_create_team(self, client: TestClient, super_admin_token):
+    def test_super_admin_can_create_team(self, client: TestClient, super_admin_token, db_session):
         slug = f"new-team-{uuid.uuid4().hex[:8]}"
         response = client.post(
             "/teams/",
@@ -92,6 +93,10 @@ class TestTeamRBAC:
         )
         assert response.status_code == 201
         assert response.json()["slug"] == slug
+        # This test creates a team through the live API rather than the
+        # test_team fixture, so it has to register it for cleanup itself —
+        # otherwise it leaks a row into the DB on every local test run.
+        db_session.track_team(SimpleNamespace(id=uuid.UUID(response.json()["id"])))
 
     def test_duplicate_team_slug_is_rejected(self, client: TestClient, super_admin_token, test_team):
         response = client.post(
@@ -121,7 +126,7 @@ class TestTeamRBAC:
         assert response.json()["username"] == member_user.username
 
     def test_team_admin_cannot_add_member_to_other_team(
-        self, client: TestClient, team_admin_token, super_admin_token
+        self, client: TestClient, team_admin_token, super_admin_token, db_session
     ):
         other_slug = f"other-team-{uuid.uuid4().hex[:8]}"
         other = client.post(
@@ -130,6 +135,7 @@ class TestTeamRBAC:
             headers={"Authorization": f"Bearer {super_admin_token}"},
         )
         other_team_id = other.json()["id"]
+        db_session.track_team(SimpleNamespace(id=uuid.UUID(other_team_id)))
 
         response = client.post(
             f"/teams/{other_team_id}/members",
