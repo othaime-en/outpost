@@ -32,6 +32,8 @@ from app.config import settings                # noqa: E402
 from app.database import SessionLocal          # noqa: E402
 from app.middleware.auth import JWT_ALGORITHM  # noqa: E402
 from app.models.audit_log import AuditLog      # noqa: E402
+from app.models.environment import Environment # noqa: E402
+from app.models.runbook import Runbook         # noqa: E402
 from app.models.team import Team               # noqa: E402
 from app.models.user import User               # noqa: E402
 
@@ -57,13 +59,26 @@ def db_session():
     session = SessionLocal()
     created_user_ids: list = []
     created_team_ids: list = []
+    created_environment_ids: list = []
 
-    session.track_user = lambda u: created_user_ids.append(u.id) or u   # type: ignore[attr-defined]
-    session.track_team = lambda t: created_team_ids.append(t.id) or t   # type: ignore[attr-defined]
+    session.track_user = lambda u: created_user_ids.append(u.id) or u               # type: ignore[attr-defined]
+    session.track_team = lambda t: created_team_ids.append(t.id) or t               # type: ignore[attr-defined]
+    session.track_environment = lambda e: created_environment_ids.append(e.id) or e  # type: ignore[attr-defined]
 
     yield session
 
     session.rollback()
+    if created_environment_ids:
+        # runbooks.environment_id and audit_logs.environment_id both FK to
+        # environments.id with no ON DELETE CASCADE, so both must clear
+        # before the environment rows themselves — same reasoning as the
+        # actor_id ordering below, applied one table over.
+        session.query(Runbook).filter(
+            Runbook.environment_id.in_(created_environment_ids)
+        ).delete(synchronize_session=False)
+        session.query(AuditLog).filter(
+            AuditLog.environment_id.in_(created_environment_ids)
+        ).delete(synchronize_session=False)
     if created_user_ids:
         # audit_logs.actor_id has no ON DELETE CASCADE — intentionally, so a
         # real user's audit trail survives them (there's no user-deletion
@@ -72,6 +87,13 @@ def db_session():
         # role changes all write an audit log) must be cleared before the
         # users themselves, or Postgres raises ForeignKeyViolation here.
         session.query(AuditLog).filter(AuditLog.actor_id.in_(created_user_ids)).delete(synchronize_session=False)
+    if created_environment_ids:
+        # environments.team_id / created_by both FK to teams/users — clear
+        # environments before the teams and users that own them.
+        session.query(Environment).filter(
+            Environment.id.in_(created_environment_ids)
+        ).delete(synchronize_session=False)
+    if created_user_ids:
         session.query(User).filter(User.id.in_(created_user_ids)).delete(synchronize_session=False)
     if created_team_ids:
         session.query(Team).filter(Team.id.in_(created_team_ids)).delete(synchronize_session=False)
@@ -143,6 +165,68 @@ def super_admin_user(db_session) -> User:
 @pytest.fixture
 def super_admin_token(super_admin_user) -> str:
     return _make_token(super_admin_user)
+
+
+@pytest.fixture
+def member_without_team_user(db_session) -> User:
+    """
+    A member with no team_id — the case create_environment must reject
+    with a 400 (you can't provision without a team to own the environment).
+    """
+    return _make_user(db_session, role="member", team_id=None)
+
+
+@pytest.fixture
+def member_without_team_token(member_without_team_user) -> str:
+    return _make_token(member_without_team_user)
+
+
+def _make_environment(
+    db_session,
+    *,
+    team_id,
+    created_by,
+    status: str = "RUNNING",
+    env_type: str = "dev",
+    ttl_hours: int = 24,
+    expires_at: Optional[datetime] = None,
+    name: Optional[str] = None,
+) -> Environment:
+    env = Environment(
+        name=name or f"test-env-{uuid.uuid4().hex[:8]}",
+        team_id=team_id,
+        created_by=created_by,
+        env_type=env_type,
+        status=status,
+        ttl_hours=ttl_hours,
+        expires_at=expires_at or (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)),
+        aws_region="us-east-1",
+    )
+    db_session.add(env)
+    db_session.commit()
+    db_session.refresh(env)
+    db_session.track_environment(env)
+    return env
+
+
+@pytest.fixture
+def make_environment(db_session):
+    """
+    Factory fixture — bypasses the API to create an Environment row
+    directly, e.g.:
+
+        env = make_environment(team_id=test_team.id, created_by=member_user.id,
+                                status="RUNNING")
+
+    Use this (rather than POST /environments) whenever a test needs an
+    environment already sitting in a particular status, since POST always
+    starts a real one at PENDING and dispatches a workflow.
+    """
+
+    def _factory(**kwargs) -> Environment:
+        return _make_environment(db_session, **kwargs)
+
+    return _factory
 
 
 @pytest.fixture
