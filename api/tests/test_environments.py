@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.models.audit_log import AuditLog
 from app.models.environment import Environment
 from app.models.runbook import Runbook
@@ -56,6 +57,17 @@ def _track(db_session, env_id: str) -> None:
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _callback_auth() -> dict:
+    """
+    Header for GitHub-Actions-only endpoints, built from the actual
+    configured secret rather than a literal — CI sets CALLBACK_SECRET to
+    `ci-callback-secret` while conftest.py's local default is
+    `test-callback-secret`; hardcoding either value here would pass in one
+    environment and silently 403 in the other.
+    """
+    return {"X-Callback-Secret": settings.callback_secret}
 
 
 def _make_other_team_owner(db_session, team_id: uuid.UUID) -> User:
@@ -413,7 +425,7 @@ class TestCallback:
         response = client.post(
             f"/environments/{uuid.uuid4()}/callback",
             json={"status": "RUNNING"},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 404
 
@@ -426,7 +438,7 @@ class TestCallback:
         response = client.post(
             f"/environments/{env.id}/callback",
             json={"status": "PENDING"},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 422
 
@@ -445,7 +457,7 @@ class TestCallback:
         response = client.post(
             f"/environments/{env.id}/callback",
             json={"status": "RUNNING", "outputs": outputs},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 200
 
@@ -478,13 +490,13 @@ class TestCallback:
         client.post(
             f"/environments/{env.id}/callback",
             json={"status": "RUNNING", "outputs": outputs},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         second_outputs = {"rds_endpoint": "second.rds.amazonaws.com"}
         response = client.post(
             f"/environments/{env.id}/callback",
             json={"status": "RUNNING", "outputs": second_outputs},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 200
 
@@ -499,7 +511,7 @@ class TestCallback:
         response = client.post(
             f"/environments/{env.id}/callback",
             json={"status": "DESTROYED", "actor": "cron"},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 200
 
@@ -523,7 +535,7 @@ class TestCallback:
         response = client.post(
             f"/environments/{env.id}/callback",
             json={"status": "FAILED", "error": "terraform apply exited 1"},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 200
 
@@ -560,7 +572,7 @@ class TestExpiredEnvironments:
         )
 
         response = client.get(
-            "/environments/expired", headers={"X-Callback-Secret": "test-callback-secret"}
+            "/environments/expired", headers=_callback_auth()
         )
         assert response.status_code == 200
         env_ids = {item["env_id"] for item in response.json()}
@@ -591,7 +603,7 @@ class TestRunbook:
         client.post(
             f"/environments/{env.id}/callback",
             json={"status": "RUNNING", "outputs": {"rds_endpoint": "db.example.com"}},
-            headers={"X-Callback-Secret": "test-callback-secret"},
+            headers=_callback_auth(),
         )
         response = client.get(f"/environments/{env.id}/runbook", headers=_auth(member_token))
         assert response.status_code == 200
