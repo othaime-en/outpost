@@ -1,9 +1,5 @@
 """
 Setup Verification Tests
-
-These are intentionally simple — they're smoke tests, not feature tests.
-The goal is to have a passing CI pipeline from day one, even before any
-real business logic exists.
 """
 
 from fastapi.testclient import TestClient
@@ -57,14 +53,22 @@ class TestRouterStubs:
         assert response.status_code == 307
         assert "github.com/login/oauth/authorize" in response.headers["location"]
 
-    def test_environments_list_stub(self, client: TestClient):
+    def test_environments_list_requires_auth(self, client: TestClient):
+        """
+        Was test_environments_list_stub — environments.py stopped being a
+        stub in Phase 4. GET /environments/ is now real, auth-protected
+        code, so an anonymous request correctly gets 401 instead of the old
+        stub's 200 + placeholder message. Full lifecycle + RBAC coverage
+        lives in test_environments.py; this test's only job is confirming
+        the route is wired up at all.
+        """
         response = client.get("/environments/")
-        # Stub returns 200 with a placeholder message
-        assert response.status_code == 200
+        assert response.status_code == 401
 
-    def test_audit_list_stub(self, client: TestClient):
+    def test_audit_list_requires_auth(self, client: TestClient):
+        """Was test_audit_list_stub — audit.py stopped being a stub in Phase 4."""
         response = client.get("/audit/")
-        assert response.status_code == 200
+        assert response.status_code == 401
 
     def test_teams_list_requires_auth(self, client: TestClient):
         """
