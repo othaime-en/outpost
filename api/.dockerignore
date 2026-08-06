@@ -1,0 +1,35 @@
+# --- Python cache/artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# --- Test & lint artifacts ---
+tests/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+pytest.ini
+
+# --- Packaging ---
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- VCS / editor / docs ---
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+*.md
+.vscode/
+.idea/
