@@ -1,0 +1,27 @@
+# .dockerignore
+node_modules
+dist/
+dist-ssr/
+.dockerignore
+Dockerfile
+*.md
+
+
+# --- Test artifacts ---
+coverage/
+**/__tests__/
+*.test.ts
+*.test.tsx
+
+# --- Caches / logs ---
+.eslintcache
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
