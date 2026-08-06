@@ -28,7 +28,6 @@ export function useEnvironments() {
     } finally {
       setLoading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // setInterval needs a stable function reference that always calls the
