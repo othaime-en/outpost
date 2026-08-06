@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { api, APIError, type Role, type Team, type User } from '../api/client'
 
@@ -211,17 +211,20 @@ function SuperAdminSection() {
   const [creatingTeam, setCreatingTeam] = useState(false)
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
 
-  function loadTeams() {
+    const loadTeams = useCallback(() => {
     api
       .listTeams()
       .then((t) => {
         setTeams(t)
-        if (!selectedTeamId && t.length > 0) setSelectedTeamId(t[0].id)
+        // Use functional update to avoid reading `selectedTeamId` from closure
+        setSelectedTeamId((prev) => (prev || (t.length > 0 ? t[0].id : prev)))
       })
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load teams'))
-  }
+  }, [])
 
-  useEffect(loadTeams, [])
+  useEffect(() => {
+    loadTeams()
+  }, [loadTeams])
 
   useEffect(() => {
     if (!selectedTeamId) {
