@@ -55,7 +55,9 @@ export default function NewEnvironment() {
 
   return (
     <div>
-      <h1 className="mb-6 text-xl font-semibold text-white">New Environment</h1>
+      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-white">
+        New Environment
+      </h1>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         {/* Left column — form */}
