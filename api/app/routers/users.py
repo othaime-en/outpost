@@ -38,6 +38,21 @@ def _user_response(user: User) -> UserResponse:
     )
 
 
+@router.get("/", response_model=list[UserResponse])
+def list_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    """
+    Every user on the platform, team or no team. This is what makes it
+    possible to find and promote a user who's logged in via GitHub OAuth but
+    hasn't been assigned to a team yet — GET /teams/{id}/members can't show
+    them, since by definition they're not a member of anything.
+    """
+    users = db.query(User).order_by(User.username).all()
+    return [_user_response(u) for u in users]
+
+
 @router.patch("/{user_id}/role", response_model=UserResponse)
 def change_role(
     user_id: str,
