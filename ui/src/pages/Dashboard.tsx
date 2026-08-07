@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useEnvironments } from '../hooks/useEnvironments'
 import { useAuth } from '../hooks/useAuth'
-import { api, APIError, type Environment, type Team } from '../api/client'
+import { api, APIError, type Environment } from '../api/client'
 import EnvironmentCard from '../components/EnvironmentCard'
 import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
@@ -10,25 +10,11 @@ import Toast, { type ToastState } from '../components/Toast'
 export default function Dashboard() {
   const { environments, loading, error, refresh } = useEnvironments()
   const { user } = useAuth()
-  const [teams, setTeams] = useState<Team[]>([])
   const [destroyTarget, setDestroyTarget] = useState<Environment | null>(null)
   const [extendTarget, setExtendTarget] = useState<Environment | null>(null)
   const [extendHours, setExtendHours] = useState(24)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
-
-  // GET /teams is super_admin only — regular members only ever see their own
-  // team's environments anyway, so there's nothing to disambiguate for them.
-  useEffect(() => {
-    if (user?.role === 'super_admin') {
-      api.listTeams().then(setTeams).catch(() => setTeams([]))
-    }
-  }, [user?.role])
-
-  const teamLabelFor = useMemo(() => {
-    const map = new Map(teams.map((t) => [t.id, t.slug]))
-    return (teamId: string) => map.get(teamId)
-  }, [teams])
 
   async function confirmDestroy() {
     if (!destroyTarget) return
@@ -100,8 +86,6 @@ export default function Dashboard() {
             <EnvironmentCard
               key={env.id}
               env={env}
-              currentUserId={user?.id ?? ''}
-              teamLabel={teamLabelFor(env.team_id)}
               onDestroy={setDestroyTarget}
               onExtend={(e) => {
                 setExtendHours(24)

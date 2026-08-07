@@ -71,7 +71,9 @@ class EnvironmentResponse(BaseModel):
     id: str
     name: str
     team_id: str
+    team_slug: str
     created_by: str
+    created_by_username: str
     env_type: str
     status: str
     ttl_hours: int
@@ -106,4 +108,11 @@ class CostBreakdownResponse(BaseModel):
     note: str
 
 
+class CostSnapshotResponse(BaseModel):
+    period_start: str
+    period_end: str
+    actual_cost_usd: float
+
+
 EnvironmentListResponse = List[EnvironmentResponse]
+CostSnapshotListResponse = List[CostSnapshotResponse]

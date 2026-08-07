@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { api, APIError, type Role, type Team, type User } from '../api/client'
 
@@ -193,60 +193,54 @@ function TeamMembersSection({
 }
 
 /**
- * super_admin-only. The plan (Section 6.7) calls for a flat "all users"
- * table with inline role dropdowns — but the API has no "list all users"
- * endpoint, only GET /teams/{id}/members. This browses team-by-team
- * instead: pick a team, see its members, change role inline via
- * PATCH /users/{id}/role. Team creation is included here too since a
- * super_admin needs somewhere to create teams before they can manage
- * members — the plan doesn't specify where, and this is the natural spot.
+ * super_admin-only. Two independent things live here:
+ *   - Create Team: a super_admin needs somewhere to create teams before
+ *     anyone can be added to one — the plan doesn't specify where, and
+ *     this is the natural spot.
+ *   - All Users: a flat table with an inline role dropdown per user, via
+ *     GET /users. This used to be team-scoped (pick a team, see its
+ *     members) because no "list all users" endpoint existed; now that
+ *     GET /users does, this also surfaces team-less users — e.g. someone
+ *     who's logged in via GitHub but hasn't been added to a team yet,
+ *     which the old team-by-team view couldn't show by definition.
  */
 function SuperAdminSection() {
   const [teams, setTeams] = useState<Team[]>([])
-  const [selectedTeamId, setSelectedTeamId] = useState<string>('')
-  const [members, setMembers] = useState<User[]>([])
+  const [users, setUsers] = useState<User[]>([])
   const [error, setError] = useState<string | null>(null)
   const [teamName, setTeamName] = useState('')
   const [teamSlug, setTeamSlug] = useState('')
   const [creatingTeam, setCreatingTeam] = useState(false)
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
 
-    const loadTeams = useCallback(() => {
+  function loadTeams() {
     api
       .listTeams()
-      .then((t) => {
-        setTeams(t)
-        // Use functional update to avoid reading `selectedTeamId` from closure
-        setSelectedTeamId((prev) => (prev || (t.length > 0 ? t[0].id : prev)))
-      })
+      .then(setTeams)
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load teams'))
-  }, [])
+  }
+
+  function loadUsers() {
+    api
+      .listUsers()
+      .then(setUsers)
+      .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load users'))
+  }
 
   useEffect(() => {
     loadTeams()
-  }, [loadTeams])
-
-  useEffect(() => {
-    if (!selectedTeamId) {
-      setMembers([])
-      return
-    }
-    api
-      .listTeamMembers(selectedTeamId)
-      .then(setMembers)
-      .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load members'))
-  }, [selectedTeamId])
+    loadUsers()
+  }, [])
 
   async function createTeam(e: React.FormEvent) {
     e.preventDefault()
     setCreatingTeam(true)
     setError(null)
     try {
-      const team = await api.createTeam({ name: teamName, slug: teamSlug })
+      await api.createTeam({ name: teamName, slug: teamSlug })
       setTeamName('')
       setTeamSlug('')
       loadTeams()
-      setSelectedTeamId(team.id)
     } catch (err) {
       setError(err instanceof APIError ? err.message : 'Failed to create team')
     } finally {
@@ -259,13 +253,15 @@ function SuperAdminSection() {
     setError(null)
     try {
       const updated = await api.changeUserRole(userId, newRole)
-      setMembers((prev) => prev.map((m) => (m.id === userId ? updated : m)))
+      setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)))
     } catch (err) {
       setError(err instanceof APIError ? err.message : 'Failed to change role')
     } finally {
       setUpdatingUserId(null)
     }
   }
+
+  const teamNameById = new Map(teams.map((t) => [t.id, t.slug]))
 
   return (
     <Section title="Teams & Roles (super_admin)">
@@ -299,53 +295,40 @@ function SuperAdminSection() {
         </button>
       </form>
 
-      {teams.length === 0 ? (
-        <p className="text-sm text-gray-600">No teams yet — create one above.</p>
-      ) : (
-        <>
-          <label className="mb-1 block text-xs text-gray-500">Team</label>
-          <select
-            value={selectedTeamId}
-            onChange={(e) => setSelectedTeamId(e.target.value)}
-            className="mb-4 rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-cyan-600 focus:outline-none"
-          >
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.slug})
-              </option>
-            ))}
-          </select>
-
-          <table className="w-full text-sm">
-            <tbody>
-              {members.map((m) => (
-                <tr key={m.id} className="border-b border-gray-800 last:border-0">
-                  <td className="py-2 font-mono text-gray-200">{m.username}</td>
-                  <td className="py-2 text-right">
-                    <select
-                      value={m.role}
-                      disabled={updatingUserId === m.id}
-                      onChange={(e) => updateRole(m.id, e.target.value as Role)}
-                      className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none disabled:opacity-50"
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-              ))}
-              {members.length === 0 && (
-                <tr>
-                  <td className="py-3 text-gray-600">No members in this team yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </>
-      )}
+      <h3 className="mb-2 text-xs text-gray-500">All Users</h3>
+      <table className="w-full text-sm">
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.id} className="border-b border-gray-800 last:border-0">
+              <td className="py-2 font-mono text-gray-200">{u.username}</td>
+              <td className="py-2 text-gray-500">
+                {u.team_id ? teamNameById.get(u.team_id) ?? 'unknown team' : (
+                  <span className="text-amber-500">no team</span>
+                )}
+              </td>
+              <td className="py-2 text-right">
+                <select
+                  value={u.role}
+                  disabled={updatingUserId === u.id}
+                  onChange={(e) => updateRole(u.id, e.target.value as Role)}
+                  className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none disabled:opacity-50"
+                >
+                  {ROLES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </td>
+            </tr>
+          ))}
+          {users.length === 0 && (
+            <tr>
+              <td className="py-3 text-gray-600">No users yet.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </Section>
   )
 }

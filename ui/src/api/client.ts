@@ -10,17 +10,6 @@
  * AuthContext's React state, both of which are wiped on a full page reload.
  * That's intentional (see hooks/useAuth.tsx).
  *
- * NOTE: these types are hand-mirrored from the Pydantic response
- * models in api/app/schemas/*.py (not generated), so if a backend schema
- * changes, this file needs a matching edit. Two known backend gaps that
- * shape the UI below:
- *   1. EnvironmentResponse only carries team_id / created_by as raw UUIDs
- *      — no team slug or creator username. There's no "resolve a user by
- *      id" endpoint, so the UI can only say "you" (comparing against the
- *      logged-in user) or fall back to a shortened id.
- *   2. There's no "list all users" endpoint — only GET /teams/{id}/members.
- *      Settings' role-management view is therefore team-scoped rather than
- *      a flat user table (see pages/Settings.tsx for how that's handled).
  */
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -53,7 +42,9 @@ export interface Environment {
   id: string
   name: string
   team_id: string
+  team_slug: string
   created_by: string
+  created_by_username: string
   env_type: EnvType
   status: EnvStatus
   ttl_hours: number
@@ -92,6 +83,12 @@ export interface CostBreakdown {
 export interface RunbookResult {
   content_md: string
   generated_at: string
+}
+
+export interface CostSnapshot {
+  period_start: string
+  period_end: string
+  actual_cost_usd: number
 }
 
 export interface AuditLogEntry {
@@ -202,6 +199,9 @@ class APIClient {
   getCostPreview = (envType: EnvType) =>
     this.request<CostBreakdown>(`/environments/cost-preview?env_type=${envType}`)
 
+  getCostSnapshots = (id: string) =>
+    this.request<CostSnapshot[]>(`/environments/${id}/cost-snapshots`)
+
   // --- Audit ------------------------------------------------------------
   listAuditLogs = (params: AuditQueryParams = {}) => {
     const qs = new URLSearchParams()
@@ -228,6 +228,8 @@ class APIClient {
     })
 
   // --- Users --------------------------------------------------------------
+  listUsers = () => this.request<User[]>('/users/')
+
   changeUserRole = (userId: string, role: Role) =>
     this.request<User>(`/users/${userId}/role`, {
       method: 'PATCH',

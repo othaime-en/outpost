@@ -19,17 +19,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.middleware.rbac import require_callback_secret, require_member
 from app.models.audit_log import AuditLog
+from app.models.cost_snapshot import CostSnapshot
 from app.models.environment import Environment
 from app.models.runbook import Runbook
 from app.models.user import User
 from app.schemas.environment import (
     CallbackRequest,
     CostBreakdownResponse,
+    CostSnapshotListResponse,
+    CostSnapshotResponse,
     CreateEnvironmentRequest,
     CreateEnvironmentResponse,
     EnvironmentListResponse,
@@ -79,7 +82,9 @@ def _environment_response(env: Environment) -> EnvironmentResponse:
         id=str(env.id),
         name=env.name,
         team_id=str(env.team_id),
+        team_slug=env.team.slug,
         created_by=str(env.created_by),
+        created_by_username=env.creator.username,
         env_type=env.env_type,
         status=env.status,
         ttl_hours=env.ttl_hours,
@@ -99,7 +104,12 @@ def _get_env_or_404(db: Session, env_id: str) -> Environment:
         env_uuid = uuid.UUID(env_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Environment not found")
-    env = db.query(Environment).filter(Environment.id == env_uuid).first()
+    env = (
+        db.query(Environment)
+        .options(joinedload(Environment.team), joinedload(Environment.creator))
+        .filter(Environment.id == env_uuid)
+        .first()
+    )
     if not env:
         raise HTTPException(status_code=404, detail="Environment not found")
     return env
@@ -146,7 +156,9 @@ def list_environments(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_member),
 ):
-    query = db.query(Environment)
+    query = db.query(Environment).options(
+        joinedload(Environment.team), joinedload(Environment.creator)
+    )
     if current_user.role != "super_admin":
         query = query.filter(Environment.team_id == current_user.team_id)
     envs = query.order_by(Environment.created_at.desc()).all()
@@ -355,3 +367,40 @@ def get_runbook(
             detail="Runbook not yet generated — environment may still be provisioning",
         )
     return RunbookResponse(content_md=rb.content_md, generated_at=rb.generated_at.isoformat())
+
+
+# --- Cost snapshots ---------------------------------------------------------
+
+
+@router.get("/{env_id}/cost-snapshots", response_model=CostSnapshotListResponse)
+def get_cost_snapshots(
+    env_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_member),
+):
+    """
+    Reads whatever actual-cost rows exist for this environment.
+
+    This is deliberately just the read side. Writing rows here requires a
+    background job that calls AWS Cost Explorer (tagged by env_id) and is
+    blocked on the AWS bootstrap being complete — see cost_snapshot.py's
+    docstring. Until that job exists, this will always return `[]`, and the
+    UI's Cost tab already has a documented fallback message for that case.
+    """
+    env = _get_env_or_404(db, env_id)
+    _assert_team_visibility(env, current_user)
+
+    snapshots = (
+        db.query(CostSnapshot)
+        .filter(CostSnapshot.environment_id == env.id)
+        .order_by(CostSnapshot.period_start.desc())
+        .all()
+    )
+    return [
+        CostSnapshotResponse(
+            period_start=s.period_start.isoformat(),
+            period_end=s.period_end.isoformat(),
+            actual_cost_usd=float(s.actual_cost_usd),
+        )
+        for s in snapshots
+    ]
