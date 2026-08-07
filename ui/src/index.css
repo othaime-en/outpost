@@ -12,10 +12,16 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 
- * Global base styles. 
- * We use Tailwind's @layer base to keep these inside the Tailwind system
- * so they interact correctly with responsive/dark mode variants.
+/*
+ * Type system
+ * -----------
+ * Three families, three jobs — see tailwind.config.js for the full
+ * rationale on each:
+ *   - Inter        → font-sans (default). All UI chrome and body text.
+ *   - Geist Mono   → font-mono (default). All system/data output — ids,
+ *                    timestamps, ARNs, JSON, cost figures, the nav wordmark.
+ *   - Geist Sans   → font-display (opt-in). Page-level <h1> titles and the
+ *                    login wordmark only — deliberately rare.
  */
 @layer base {
     html {
@@ -24,9 +30,22 @@
     }
 
     body {
-        @apply bg-gray-950 text-white antialiased;
+        @apply bg-gray-950 text-white antialiased font-sans;
         /* antialiased = font-smoothing: antialiased, which makes text look crisper
        on dark backgrounds (thinner stroke weight) */
+        /* Inter's recommended OpenType features: cv11 gives a single-story
+           'a' more consistent with Geist's, ss01 opens up the punctuation
+           slightly — small, but it's what keeps Inter from looking like the
+           generic system-font fallback it's often mistaken for. */
+        font-feature-settings: 'cv11', 'ss01';
+    }
+
+    /* Every font-mono usage in this app is a number, id, slug, or code
+       fragment meant to sit in a column (cost figures, table cells, stat
+       grids) — tabular figures keep those aligned instead of drifting with
+       each digit's natural width. */
+    .font-mono {
+        font-variant-numeric: tabular-nums;
     }
 
     /* 
