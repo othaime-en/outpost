@@ -10,20 +10,11 @@ const DESTROYABLE = new Set(['RUNNING', 'FAILED'])
 
 interface EnvironmentCardProps {
   env: Environment
-  currentUserId: string
-  teamLabel?: string
   onDestroy: (env: Environment) => void
   onExtend: (env: Environment) => void
 }
 
-export default function EnvironmentCard({
-  env,
-  currentUserId,
-  teamLabel,
-  onDestroy,
-  onExtend,
-}: EnvironmentCardProps) {
-  const createdByLabel = env.created_by === currentUserId ? 'you' : `user ${shortId(env.created_by)}`
+export default function EnvironmentCard({ env, onDestroy, onExtend }: EnvironmentCardProps) {
   const canDestroy = DESTROYABLE.has(env.status)
   const canExtend = env.status === 'RUNNING'
 
@@ -47,7 +38,7 @@ export default function EnvironmentCard({
         <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono uppercase tracking-wide">
           {env.env_type}
         </span>
-        {teamLabel && <span className="font-mono">{teamLabel}</span>}
+        <span className="font-mono">{env.team_slug}</span>
         <span title={env.id} className="font-mono text-gray-600">
           {shortId(env.id)}
         </span>
@@ -71,7 +62,7 @@ export default function EnvironmentCard({
       </div>
 
       <div className="text-xs text-gray-600">
-        Created by <span className="text-gray-400">{createdByLabel}</span> ·{' '}
+        Created by <span className="text-gray-400">@{env.created_by_username}</span> ·{' '}
         {formatRelativeTime(env.created_at)}
       </div>
 
