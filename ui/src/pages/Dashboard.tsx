@@ -50,7 +50,9 @@ export default function Dashboard() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-white">Environments</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-white">
+            Environments
+          </h1>
           <p className="text-sm text-gray-500">
             {user?.role === 'super_admin' ? 'All teams' : 'Your team'}
           </p>
