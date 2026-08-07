@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, APIError, type AuditLogEntry, type Environment } from '../api/client'
+import { api, APIError, type AuditLogEntry, type CostSnapshot, type Environment } from '../api/client'
 import StatusBadge from '../components/StatusBadge'
 import HealthIndicator from '../components/HealthIndicator'
 import RunbookViewer from '../components/RunbookViewer'
@@ -82,14 +82,14 @@ export default function EnvironmentDetail() {
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Stat label="Team" value={env.team_slug} mono />
         <Stat label="Region" value={env.aws_region} />
         <Stat
           label="Expires"
           value={env.status === 'DESTROYED' ? '—' : undefined}
           node={env.status === 'DESTROYED' ? undefined : <TTLCountdown expiresAt={env.expires_at} />}
         />
-        <Stat label="Created" value={formatUTC(env.created_at)} />
-        <Stat label="Env ID" value={env.id} mono small />
+        <Stat label="Created" value={`${formatUTC(env.created_at)} by @${env.created_by_username}`} small />
       </div>
 
       <div className="mb-6 flex gap-1 border-b border-gray-800">
@@ -278,28 +278,47 @@ function AuditTab({ envId }: { envId: string }) {
 }
 
 function CostTab({ env }: { env: Environment }) {
+  const [snapshots, setSnapshots] = useState<CostSnapshot[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api
+      .getCostSnapshots(env.id)
+      .then(setSnapshots)
+      .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load cost data'))
+  }, [env.id])
+
+  const latest = snapshots?.[0]
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-        <div className="mb-1 text-xs text-gray-500">Estimated monthly cost</div>
-        <div className="font-mono text-2xl font-bold text-cyan-400">
-          {env.cost_estimate_usd !== null ? `$${env.cost_estimate_usd.toFixed(2)}` : 'n/a'}
+    <div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
+          <div className="mb-1 text-xs text-gray-500">Estimated monthly cost</div>
+          <div className="font-mono text-2xl font-bold text-cyan-400">
+            {env.cost_estimate_usd !== null ? `$${env.cost_estimate_usd.toFixed(2)}` : 'n/a'}
+          </div>
+          <div className="mt-1 text-xs text-gray-600">Computed at creation time, 24/7 runtime assumed.</div>
         </div>
-        <div className="mt-1 text-xs text-gray-600">Computed at creation time, 24/7 runtime assumed.</div>
-      </div>
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-        <div className="mb-1 text-xs text-gray-500">Actual cost</div>
-        <div className="font-mono text-2xl font-bold text-gray-600">—</div>
-        {/*
-          The API doesn't currently expose a cost-snapshot read endpoint —
-          `cost_snapshots` rows are modeled (Section 6, data model) but there's
-          no GET route to fetch them yet. Showing the plan's documented
-          fallback message rather than fabricating a number.
-        */}
-        <div className="mt-1 text-xs text-gray-600">
-          Actual cost available after 24h (AWS Cost Explorer lag).
+        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
+          <div className="mb-1 text-xs text-gray-500">Actual cost (latest snapshot)</div>
+          <div className="font-mono text-2xl font-bold text-gray-200">
+            {latest ? `$${latest.actual_cost_usd.toFixed(2)}` : <span className="text-gray-600">—</span>}
+          </div>
+          {/*
+            GET /environments/{id}/cost-snapshots is a real endpoint now —
+            it just has nothing to return until a background job pulls data
+            from AWS Cost Explorer, which is blocked on the AWS bootstrap. This
+            fallback covers that empty-but-working state, not a missing route.
+          */}
+          <div className="mt-1 text-xs text-gray-600">
+            {latest
+              ? `${latest.period_start} → ${latest.period_end}`
+              : 'Actual cost available after 24h (AWS Cost Explorer lag).'}
+          </div>
         </div>
       </div>
+      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
     </div>
   )
 }
