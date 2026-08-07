@@ -29,8 +29,9 @@ export default function RunbookViewer({
       </div>
       <div
         className="prose prose-invert prose-sm max-w-none
-                   prose-headings:text-white prose-a:text-cyan-400 prose-code:text-cyan-300
-                   prose-pre:bg-gray-950 prose-pre:border prose-pre:border-gray-800
+                   prose-headings:text-white prose-a:text-cyan-400
+                   prose-code:font-mono prose-code:text-cyan-300
+                   prose-pre:font-mono prose-pre:bg-gray-950 prose-pre:border prose-pre:border-gray-800
                    prose-table:text-sm prose-th:text-gray-300 prose-strong:text-gray-200"
       >
         <ReactMarkdown>{contentMd}</ReactMarkdown>

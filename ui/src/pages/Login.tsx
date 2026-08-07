@@ -3,8 +3,19 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 w-96 text-center">
-        <h1 className="text-2xl font-bold text-white mb-2">IDP Lite</h1>
-        <p className="text-gray-400 mb-8 text-sm">Self-service environment provisioning</p>
+        {/*
+          Geist Mono sets the small system-y eyebrow, Geist Sans carries the
+          wordmark (the one place in the app that earns a display face),
+          Inter handles the actual sentence beneath it. Everywhere else in
+          the app sticks to two faces at most.
+        */}
+        <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.2em] text-cyan-500">
+          Self-Service Platform
+        </p>
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-white mb-2">
+          IDP Lite
+        </h1>
+        <p className="text-gray-400 mb-8 text-sm">Provision cloud environments on demand</p>
         {/*
           This anchor tag is intentional — it's a full page navigation, not a React Router link.
           We're leaving the browser to go to the FastAPI GitHub OAuth redirect endpoint.

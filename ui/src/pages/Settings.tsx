@@ -10,7 +10,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-10">
-      <h1 className="text-xl font-semibold text-white">Settings</h1>
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-white">Settings</h1>
       <ApiKeySection />
       {(user.role === 'team_admin' || user.role === 'super_admin') && user.team_id && (
         <TeamMembersSection teamId={user.team_id} currentUserRole={user.role} />

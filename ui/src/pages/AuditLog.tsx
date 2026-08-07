@@ -49,7 +49,9 @@ export default function AuditLog() {
 
   return (
     <div>
-      <h1 className="mb-6 text-xl font-semibold text-white">Audit Log</h1>
+      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-white">
+        Audit Log
+      </h1>
 
       <div className="mb-4 flex flex-wrap gap-3">
         <select
