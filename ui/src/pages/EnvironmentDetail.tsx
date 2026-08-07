@@ -83,7 +83,7 @@ export default function EnvironmentDetail() {
 
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Stat label="Team" value={env.team_slug} mono />
-        <Stat label="Region" value={env.aws_region} />
+        <Stat label="Region" value={env.aws_region} mono />
         <Stat
           label="Expires"
           value={env.status === 'DESTROYED' ? '—' : undefined}
