@@ -122,6 +122,14 @@ export interface Team {
   slug: string
 }
 
+export interface TeamDetail extends Team {
+  created_at: string
+  members: User[]
+  environments: Environment[]
+  active_environment_count: number
+  estimated_monthly_cost_usd: number
+}
+
 export interface CreateTeamBody {
   name: string
   slug: string
@@ -130,6 +138,23 @@ export interface CreateTeamBody {
 export interface AddMemberBody {
   github_username: string
   role: Role
+}
+
+/**
+ * Server-side filters for GET /environments. All optional — an empty object
+ * is the same as calling listEnvironments() with no filters, which excludes
+ * DESTROYED by default (see the API's own docstring on this behavior).
+ */
+export interface EnvironmentFilters {
+  status?: EnvStatus[]
+  teamId?: string // super_admin only — ignored by the API otherwise
+  envType?: EnvType
+  healthStatus?: HealthStatus
+  expiringWithinHours?: number
+  includeDestroyed?: boolean
+  createdByMe?: boolean
+  sortBy?: 'created_at' | 'expires_at' | 'cost_estimate_usd'
+  sortDir?: 'asc' | 'desc'
 }
 
 export class APIError extends Error {
@@ -175,7 +200,22 @@ class APIClient {
   generateApiKey = () => this.request<ApiKeyResponse>('/auth/api-key', { method: 'POST' })
 
   // --- Environments ---------------------------------------------------------
-  listEnvironments = () => this.request<Environment[]>('/environments/')
+  listEnvironments = (filters: EnvironmentFilters = {}) => {
+    const qs = new URLSearchParams()
+    for (const s of filters.status ?? []) qs.append('status', s)
+    if (filters.teamId) qs.set('team_id', filters.teamId)
+    if (filters.envType) qs.set('env_type', filters.envType)
+    if (filters.healthStatus) qs.set('health_status', filters.healthStatus)
+    if (filters.expiringWithinHours !== undefined) {
+      qs.set('expiring_within_hours', String(filters.expiringWithinHours))
+    }
+    if (filters.includeDestroyed) qs.set('include_destroyed', 'true')
+    if (filters.createdByMe) qs.set('created_by_me', 'true')
+    if (filters.sortBy) qs.set('sort_by', filters.sortBy)
+    if (filters.sortDir) qs.set('sort_dir', filters.sortDir)
+    const query = qs.toString()
+    return this.request<Environment[]>(`/environments/${query ? `?${query}` : ''}`)
+  }
 
   getEnvironment = (id: string) => this.request<Environment>(`/environments/${id}`)
 
@@ -213,8 +253,13 @@ class APIClient {
     return this.request<PaginatedAuditLogs>(`/audit/?${qs.toString()}`)
   }
 
-  // --- Teams (super_admin for list/create; team_admin+ for members) -------
+  // --- Teams ----------------------------------------------------------------
+  // list/create/detail/members are all open to any authenticated user now,
+  // scoped by role server-side (see the API's routers/teams.py docstring).
+  // Only addTeamMember stays team_admin(own team)/super_admin(any).
   listTeams = () => this.request<Team[]>('/teams/')
+
+  getTeam = (teamId: string) => this.request<TeamDetail>(`/teams/${teamId}`)
 
   createTeam = (body: CreateTeamBody) =>
     this.request<Team>('/teams/', { method: 'POST', body: JSON.stringify(body) })
