@@ -4,18 +4,12 @@ import { useAuth } from '../hooks/useAuth'
 
 const NAV_LINKS = [
   { to: '/', label: 'Dashboard' },
+  { to: '/teams', label: 'Teams' },
   { to: '/new', label: 'New Environment' },
   { to: '/audit', label: 'Audit Log' },
   { to: '/settings', label: 'Settings' },
 ]
 
-/**
- * Not called out as its own component in Section 6 of the plan, but Phase 6
- * introduces five routed pages (Dashboard, New Environment, Detail, Audit
- * Log, Settings) with no shared chrome between them — without this, every
- * page would need to reinvent navigation. Flagging as an addition rather
- * than silently introducing it.
- */
 export default function AppShell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
   const location = useLocation()
