@@ -10,6 +10,8 @@ import NewEnvironment from './pages/NewEnvironment'
 import EnvironmentDetail from './pages/EnvironmentDetail'
 import AuditLog from './pages/AuditLog'
 import Settings from './pages/Settings'
+import Teams from './pages/Teams'
+import TeamDetail from './pages/TeamDetail'
 
 /** Shorthand for "protected route, rendered inside the app shell's nav/header". */
 function Protected({ children }: { children: React.ReactNode }) {
@@ -50,6 +52,22 @@ export default function App() {
             element={
               <Protected>
                 <EnvironmentDetail />
+              </Protected>
+            }
+          />
+          <Route
+            path="/teams"
+            element={
+              <Protected>
+                <Teams />
+              </Protected>
+            }
+          />
+          <Route
+            path="/teams/:id"
+            element={
+              <Protected>
+                <TeamDetail />
               </Protected>
             }
           />
