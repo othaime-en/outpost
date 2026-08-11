@@ -1,20 +1,32 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useEnvironments } from '../hooks/useEnvironments'
 import { useAuth } from '../hooks/useAuth'
-import { api, APIError, type Environment } from '../api/client'
+import { api, APIError, type Environment, type EnvironmentFilters, type Team } from '../api/client'
 import EnvironmentCard from '../components/EnvironmentCard'
+import EnvironmentFilterBar from '../components/EnvironmentFilterBar'
 import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
 
 export default function Dashboard() {
-  const { environments, loading, error, refresh } = useEnvironments()
   const { user } = useAuth()
+  const [filters, setFilters] = useState<EnvironmentFilters>({})
+  const { environments, loading, error, refresh } = useEnvironments(filters)
+  const [teams, setTeams] = useState<Team[]>([])
   const [destroyTarget, setDestroyTarget] = useState<Environment | null>(null)
   const [extendTarget, setExtendTarget] = useState<Environment | null>(null)
   const [extendHours, setExtendHours] = useState(24)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
+
+  // The team filter dropdown only matters for super_admin (everyone else is
+  // already scoped to their own team server-side), so only super_admin pays
+  // for the extra request.
+  useEffect(() => {
+    if (user?.role === 'super_admin') {
+      api.listTeams().then(setTeams).catch(() => setTeams([]))
+    }
+  }, [user?.role])
 
   async function confirmDestroy() {
     if (!destroyTarget) return
@@ -65,6 +77,13 @@ export default function Dashboard() {
         </Link>
       </div>
 
+      <EnvironmentFilterBar
+        filters={filters}
+        onChange={setFilters}
+        teams={teams}
+        showTeamFilter={user?.role === 'super_admin'}
+      />
+
       {loading && <p className="text-sm text-gray-500">Loading environments…</p>}
 
       {error && !loading && (
@@ -75,7 +94,11 @@ export default function Dashboard() {
 
       {!loading && !error && environments.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
-          <p className="mb-4 text-gray-400">No environments yet.</p>
+          <p className="mb-4 text-gray-400">
+            {Object.keys(filters).length > 0
+              ? 'No environments match these filters.'
+              : 'No environments yet.'}
+          </p>
           <Link to="/new" className="text-cyan-400 hover:underline text-sm">
             Provision your first environment →
           </Link>
