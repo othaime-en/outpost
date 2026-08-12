@@ -10,15 +10,22 @@ Two endpoints — /callback and /expired — are called by GitHub Actions, not
 a logged-in user, and are guarded by `require_callback_secret` (a shared
 header secret) instead of JWT/API-key auth. /cost-preview takes no auth at
 all: it's a read-only pricing calculator, not a query over anything private.
+
+DEVIATION FROM THE ORIGINAL PLAN — documented per project convention.
+GET / originally took no query params and always returned every environment
+visible to the caller, DESTROYED included. Dashboard usage showed that grows
+unbounded and unusable over time, so list_environments() now accepts filter
+and sort query params (see the docstring on that function), and DESTROYED
+environments are excluded by default unless explicitly asked for.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -29,6 +36,7 @@ from app.models.environment import Environment
 from app.models.runbook import Runbook
 from app.models.user import User
 from app.schemas.environment import (
+    VALID_ENV_TYPES,
     CallbackRequest,
     CostBreakdownResponse,
     CostSnapshotListResponse,
@@ -49,6 +57,20 @@ router = APIRouter()
 
 # Terminal-ish statuses a destroy can be triggered from.
 DESTROYABLE_STATUSES = ("RUNNING", "FAILED")
+
+# All valid values for the environment state machine. Used to validate the
+# `status` filter query param — anything outside this set is a client error,
+# not a query that should just silently return nothing.
+VALID_ENV_STATUSES = {"PENDING", "PROVISIONING", "RUNNING", "DESTROYING", "DESTROYED", "FAILED"}
+VALID_HEALTH_STATUSES = {"HEALTHY", "DEGRADED", "UNKNOWN"}
+
+# Whitelisted sort columns — deliberately not a free-form column name, to
+# avoid building dynamic SQL from user input.
+_SORT_COLUMNS = {
+    "created_at": Environment.created_at,
+    "expires_at": Environment.expires_at,
+    "cost_estimate_usd": Environment.cost_estimate_usd,
+}
 
 
 def _audit(
@@ -155,13 +177,94 @@ def get_expired(db: Session = Depends(get_db), _=Depends(require_callback_secret
 def list_environments(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_member),
+    statuses: Optional[List[str]] = Query(
+        default=None,
+        alias="status",
+        description="Repeat to pass multiple, e.g. ?status=RUNNING&status=FAILED. "
+        "If omitted, DESTROYED is excluded by default (see include_destroyed).",
+    ),
+    team_id: Optional[str] = Query(
+        default=None,
+        description="super_admin only — filters to one team. Ignored for everyone else, "
+        "since they're already scoped to their own team.",
+    ),
+    env_type: Optional[str] = Query(default=None, description="'dev' or 'staging'"),
+    health_status: Optional[str] = Query(default=None, description="HEALTHY | DEGRADED | UNKNOWN"),
+    expiring_within_hours: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description="Only RUNNING environments whose expires_at falls within this many hours.",
+    ),
+    include_destroyed: bool = Query(
+        default=False,
+        description="Include DESTROYED environments. Ignored if `status` is explicitly passed.",
+    ),
+    created_by_me: bool = Query(default=False, description="Only environments the caller created."),
+    sort_by: str = Query(default="created_at", pattern="^(created_at|expires_at|cost_estimate_usd)$"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
 ):
+    """
+    List environments visible to the caller, with optional server-side
+    filtering and sorting.
+
+    Team scoping (unchanged): non-super_admin users only ever see their own
+    team's environments, regardless of the `team_id` param — that param only
+    does anything for a super_admin looking across teams.
+
+    DESTROYED environments are excluded unless the caller either passes
+    `include_destroyed=true` or explicitly filters `status=DESTROYED` — a
+    dashboard that always showed every environment ever created would grow
+    unusable within weeks of real use.
+    """
     query = db.query(Environment).options(
         joinedload(Environment.team), joinedload(Environment.creator)
     )
+
     if current_user.role != "super_admin":
         query = query.filter(Environment.team_id == current_user.team_id)
-    envs = query.order_by(Environment.created_at.desc()).all()
+    elif team_id:
+        query = query.filter(Environment.team_id == team_id)
+
+    if statuses:
+        invalid = set(statuses) - VALID_ENV_STATUSES
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid status value(s): {sorted(invalid)}. Must be one of {sorted(VALID_ENV_STATUSES)}",
+            )
+        query = query.filter(Environment.status.in_(statuses))
+    elif not include_destroyed:
+        query = query.filter(Environment.status != "DESTROYED")
+
+    if env_type:
+        if env_type not in VALID_ENV_TYPES:
+            raise HTTPException(
+                status_code=422, detail=f"env_type must be one of {sorted(VALID_ENV_TYPES)}"
+            )
+        query = query.filter(Environment.env_type == env_type)
+
+    if health_status:
+        if health_status not in VALID_HEALTH_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"health_status must be one of {sorted(VALID_HEALTH_STATUSES)}",
+            )
+        query = query.filter(Environment.health_status == health_status)
+
+    if expiring_within_hours is not None:
+        cutoff = datetime.now(timezone.utc) + timedelta(hours=expiring_within_hours)
+        query = query.filter(
+            Environment.status == "RUNNING",
+            Environment.expires_at <= cutoff,
+        )
+
+    if created_by_me:
+        query = query.filter(Environment.created_by == current_user.id)
+
+    sort_column = _SORT_COLUMNS[sort_by]
+    sort_column = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+    envs = query.order_by(sort_column).all()
+
     return [_environment_response(e) for e in envs]
 
 
