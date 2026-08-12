@@ -37,10 +37,47 @@ team_admin (own team) / super_admin (any team) for POST .../members, and
 still entirely out of this file for role changes generally — see
 routers/users.py's module docstring for why PATCH /users/{id}/role isn't
 here.
+
+FOLLOW-UP ADDITION — member removal and team deletion.
+
+  - PATCH /teams/{id}/members/{user_id}/role — promotes/demotes an
+    *existing* member within a team. Needed because POST .../members only
+    covers onboarding someone new by GitHub username; there was previously
+    no way to change an existing member's role without going through them
+    as if they were new.
+
+  - DELETE /teams/{id}/members/{user_id} — removes a member from a team
+    (nulls team_id, resets role to "member" unless they're a super_admin).
+    Self-serve (anyone can remove themselves) or forced (team_admin on own
+    team / super_admin on any). Blocked if the target is the team's last
+    remaining team_admin — a team can never be left without one. Promote a
+    peer via the endpoint above first.
+
+  - DELETE /teams/{id} — team_admin (own team) / super_admin (any team).
+    Blocked unless every environment on the team is DESTROYED (FAILED
+    included — per the architecture doc, a FAILED environment can still
+    have partially-provisioned AWS resources and needs manual resolution
+    first; this is a hard, non-cascading block, deliberately not something
+    team deletion auto-resolves). Members, by contrast, ARE auto-detached
+    as part of deletion — team_id/role bookkeeping in our own DB is fully
+    reversible and has no external side effect, unlike environments, so
+    there's no reason to force a manual "remove everyone first" step for
+    that half of the precondition.
+
+    This is a SOFT delete (teams.deleted_at), not a hard row delete — see
+    the Team model's own docstring: environments.team_id is NOT NULL with
+    a default (RESTRICT) foreign key, and environment rows are kept
+    forever even after DESTROYED for audit/cost history. Any team that's
+    ever had a single environment would fail a hard delete with a
+    ForeignKeyViolation. Soft-deleted teams are filtered out of every list
+    / get / membership endpoint via _get_active_team_or_404() below, so
+    they behave as gone to normal callers while every historical
+    environment's team_id reference stays valid.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -53,7 +90,14 @@ from app.models.environment import Environment
 from app.models.team import Team
 from app.models.user import User
 from app.schemas.environment import EnvironmentResponse
-from app.schemas.team import AddMemberRequest, CreateTeamRequest, TeamDetailResponse, TeamResponse
+from app.schemas.team import (
+    AddMemberRequest,
+    CreateTeamRequest,
+    TeamDeleteResponse,
+    TeamDetailResponse,
+    TeamResponse,
+    UpdateMemberRoleRequest,
+)
 from app.schemas.user import UserResponse
 
 router = APIRouter()
@@ -109,6 +153,15 @@ def _assert_team_visibility(team_id: str, current_user: User) -> None:
     """super_admin sees every team; everyone else is scoped to their own."""
     if current_user.role != "super_admin" and str(current_user.team_id) != team_id:
         raise HTTPException(status_code=403, detail="Not your team")
+
+
+def _get_active_team_or_404(db: Session, team_id: str) -> Team:
+    """Fetches a team, treating a soft-deleted one as not found — a deleted
+    team should behave as absent to every caller except the audit log."""
+    team = db.query(Team).filter(Team.id == team_id, Team.deleted_at.is_(None)).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return team
 
 
 @router.post("/", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
@@ -169,7 +222,7 @@ def list_teams(
     current_user: User = Depends(require_member),
 ):
     """super_admin sees every team. Everyone else sees only their own (0 or 1)."""
-    query = db.query(Team)
+    query = db.query(Team).filter(Team.deleted_at.is_(None))
     if current_user.role != "super_admin":
         if not current_user.team_id:
             return []
@@ -188,9 +241,7 @@ def get_team(
     Team info + members + environments + aggregate stats in one call, so the
     frontend's team detail page doesn't need three separate round trips.
     """
-    team = db.query(Team).filter(Team.id == team_id).first()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = _get_active_team_or_404(db, team_id)
     _assert_team_visibility(team_id, current_user)
 
     members = db.query(User).filter(User.team_id == team.id).order_by(User.username).all()
@@ -232,9 +283,7 @@ def list_members(
     members. Previously team_admin+ only; opened up because there's no
     admin action gated behind this response, just a member roster.
     """
-    team = db.query(Team).filter(Team.id == team_id).first()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+    _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
     _assert_team_visibility(team_id, current_user)
 
     members = db.query(User).filter(User.team_id == team_id).order_by(User.username).all()
@@ -252,9 +301,7 @@ def add_member(
     if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
         raise HTTPException(status_code=403, detail="You can only add members to your own team")
 
-    team = db.query(Team).filter(Team.id == team_id).first()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = _get_active_team_or_404(db, team_id)
 
     # A team_admin can promote a peer to team_admin, but never to super_admin.
     if current_user.role == "team_admin" and body.role == "super_admin":
@@ -285,3 +332,196 @@ def add_member(
     db.commit()
     db.refresh(user)
     return _member_response(user)
+
+
+def _is_last_team_admin(db: Session, team_id, user: User) -> bool:
+    """True if `user` is a team_admin on `team_id` and no other team_admin
+    exists on that team. Used to block both demotion and removal of the
+    last admin standing — a team must always have at least one."""
+    if user.role != "team_admin":
+        return False
+    other_admins = (
+        db.query(User)
+        .filter(User.team_id == team_id, User.role == "team_admin", User.id != user.id)
+        .count()
+    )
+    return other_admins == 0
+
+
+@router.patch("/{team_id}/members/{user_id}/role", response_model=UserResponse)
+def update_member_role(
+    team_id: str,
+    user_id: str,
+    body: UpdateMemberRoleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_team_admin),
+):
+    """
+    Promotes or demotes an existing member of `team_id`. Distinct from the
+    onboarding flow (POST .../members, which looks a user up by GitHub
+    username) and from the platform-wide PATCH /users/{id}/role (super_admin
+    only, works even for team-less users — see routers/users.py).
+    """
+    if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
+        raise HTTPException(status_code=403, detail="You can only manage your own team's members")
+    if current_user.role == "team_admin" and body.role == "super_admin":
+        raise HTTPException(status_code=403, detail="Only a super_admin can grant the super_admin role")
+
+    _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
+
+    target = db.query(User).filter(User.id == user_id, User.team_id == team_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    if body.role != "team_admin" and _is_last_team_admin(db, team_id, target):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot demote the team's last team_admin. Promote another member first.",
+        )
+
+    old_role = target.role
+    target.role = body.role
+
+    db.add(
+        AuditLog(
+            actor_id=current_user.id,
+            action="USER_ROLE_CHANGED",
+            actor_type="user",
+            event_metadata={
+                "user_id": str(target.id),
+                "username": target.username,
+                "team_id": team_id,
+                "old_role": old_role,
+                "new_role": body.role,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(target)
+    return _member_response(target)
+
+
+@router.delete("/{team_id}/members/{user_id}", response_model=UserResponse)
+def remove_member(
+    team_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_member),
+):
+    """
+    Removes a member from a team. Self-serve — anyone can call this on
+    their own user_id to leave. Also usable by that team's team_admin (own
+    team) or a super_admin (any team) to forcibly remove someone else.
+    Blocked if the target is the team's last team_admin — see
+    update_member_role() above for how to hand off admin first.
+    """
+    _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
+
+    is_self = str(current_user.id) == user_id
+    is_forced_by_admin = current_user.role == "super_admin" or (
+        current_user.role == "team_admin" and str(current_user.team_id) == team_id
+    )
+    if not is_self and not is_forced_by_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only remove yourself, unless you're this team's team_admin or a super_admin",
+        )
+
+    target = db.query(User).filter(User.id == user_id, User.team_id == team_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    if _is_last_team_admin(db, team_id, target):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove the team's last team_admin. Promote another member first.",
+        )
+
+    old_role = target.role
+    target.team_id = None
+    if target.role != "super_admin":
+        target.role = "member"
+
+    db.add(
+        AuditLog(
+            actor_id=current_user.id,
+            action="USER_REMOVED",
+            actor_type="user",
+            event_metadata={
+                "user_id": str(target.id),
+                "username": target.username,
+                "team_id": team_id,
+                "old_role": old_role,
+                "self_serve": is_self,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(target)
+    return _member_response(target)
+
+
+@router.delete("/{team_id}", response_model=TeamDeleteResponse)
+def delete_team(
+    team_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_team_admin),
+):
+    """
+    Deletes (soft-deletes) a team. team_admin (own team) / super_admin (any team).
+
+    Blocked unless every environment on the team is DESTROYED — this is a
+    hard, non-cascading precondition; the caller must destroy (or, for a
+    FAILED environment, manually resolve) each one individually first. See
+    this module's docstring for why environments and members are treated
+    differently here, and the Team model's docstring for why this can't be
+    a hard row delete.
+
+    Remaining members are auto-detached (team_id/role bookkeeping only, no
+    external side effect) as part of this same transaction — no separate
+    "remove everyone first" step required.
+    """
+    if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own team")
+
+    team = _get_active_team_or_404(db, team_id)
+
+    non_destroyed = (
+        db.query(Environment)
+        .filter(Environment.team_id == team_id, Environment.status != "DESTROYED")
+        .count()
+    )
+    if non_destroyed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot delete team: {non_destroyed} environment(s) are not DESTROYED. "
+                "Destroy (or resolve FAILED) environments first."
+            ),
+        )
+
+    members = db.query(User).filter(User.team_id == team_id).all()
+    detached_usernames = [m.username for m in members]
+    for m in members:
+        m.team_id = None
+        if m.role != "super_admin":
+            m.role = "member"
+
+    team_name, team_slug = team.name, team.slug
+    team.deleted_at = datetime.now(timezone.utc)
+
+    db.add(
+        AuditLog(
+            actor_id=current_user.id,
+            action="TEAM_DELETED",
+            actor_type="user",
+            event_metadata={
+                "team_id": team_id,
+                "team_name": team_name,
+                "team_slug": team_slug,
+                "detached_members": detached_usernames,
+            },
+        )
+    )
+    db.commit()
+    return TeamDeleteResponse(ok=True, detached_members=detached_usernames)
