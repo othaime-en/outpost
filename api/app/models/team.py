@@ -8,6 +8,14 @@ The `slug` field is particularly important — it's used as a tag value on all
 AWS resources provisioned for that team's environments. This is how Cost Explorer
 knows which team incurred which charges. It must be URL-safe (lowercase, hyphens only).
 
+`deleted_at` — teams are SOFT-deleted, same pattern as Environment.destroyed_at.
+This isn't optional: `environments.team_id` is NOT NULL with a default
+(RESTRICT) foreign key, and environment rows are deliberately never removed
+even after DESTROYED (audit trail, cost history). A hard `DELETE FROM teams`
+would raise a ForeignKeyViolation for any team that ever had a single
+environment — which is effectively every team that's actually been used.
+See routers/teams.py's delete_team() for the enforcement.
+
 Relationships:
   Team → User:        one-to-many (a team has many users)
   Team → Environment: one-to-many (a team has many environments)
@@ -46,6 +54,11 @@ class Team(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+    deleted_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Soft-delete marker. NULL means active. See module docstring for why this can't be a hard delete.",
     )
 
     # --- Relationships ---
