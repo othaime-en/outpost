@@ -1,19 +1,26 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { api, APIError, type Role, type TeamDetail as TeamDetailData } from '../api/client'
+import { api, APIError, type Role, type TeamDetail as TeamDetailData, type User } from '../api/client'
 import StatusBadge from '../components/StatusBadge'
 import HealthIndicator from '../components/HealthIndicator'
 import CostBadge from '../components/CostBadge'
+import Modal from '../components/Modal'
+import Toast, { type ToastState } from '../components/Toast'
 import { formatRelativeTime, shortId } from '../lib/format'
 
 const ROLES: Role[] = ['member', 'team_admin', 'super_admin']
 
 export default function TeamDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [team, setTeam] = useState<TeamDetailData | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [toast, setToast] = useState<ToastState | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<User | null>(null)
+  const [showDeleteTeam, setShowDeleteTeam] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   function load() {
     if (!id) return
@@ -27,8 +34,11 @@ export default function TeamDetail() {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
-        {error}
+      <div>
+        <BackLink />
+        <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+          {error}
+        </div>
       </div>
     )
   }
@@ -37,12 +47,74 @@ export default function TeamDetail() {
   }
 
   const canManageMembers = user?.role === 'super_admin' || (user?.role === 'team_admin' && user.team_id === team.id)
+  const canDeleteTeam = canManageMembers // same scoping: team_admin (own team) / super_admin (any)
+  const blockingEnvironments = team.environments.filter((e) => e.status !== 'DESTROYED')
+
+  async function promoteToAdmin(memberId: string) {
+    if (!team) return
+    setBusy(true)
+    try {
+      await api.updateMemberRole(team.id, memberId, 'team_admin')
+      setToast({ kind: 'success', message: 'Promoted to team_admin' })
+      load()
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Failed to promote' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmRemove() {
+    if (!team || !removeTarget) return
+    setBusy(true)
+    try {
+      await api.removeTeamMember(team.id, removeTarget.id)
+      setToast({
+        kind: 'success',
+        message: removeTarget.id === user?.id ? 'You left the team' : `Removed @${removeTarget.username}`,
+      })
+      setRemoveTarget(null)
+      if (removeTarget.id === user?.id) {
+        navigate('/teams')
+      } else {
+        load()
+      }
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Failed to remove member' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmDeleteTeam() {
+    if (!team) return
+    setBusy(true)
+    try {
+      await api.deleteTeam(team.id)
+      navigate('/teams')
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Failed to delete team' })
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-white">{team.name}</h1>
-        <p className="font-mono text-sm text-gray-500">{team.slug}</p>
+      <BackLink />
+
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-white">{team.name}</h1>
+          <p className="font-mono text-sm text-gray-500">{team.slug}</p>
+        </div>
+        {canDeleteTeam && (
+          <button
+            onClick={() => setShowDeleteTeam(true)}
+            className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400 hover:bg-red-950"
+          >
+            Delete Team
+          </button>
+        )}
       </div>
 
       {/* Overview */}
@@ -59,13 +131,43 @@ export default function TeamDetail() {
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
           <table className="w-full text-sm">
             <tbody>
-              {team.members.map((m) => (
-                <tr key={m.id} className="border-b border-gray-800 last:border-0">
-                  <td className="py-2 font-mono text-gray-200">{m.username}</td>
-                  <td className="py-2 text-gray-500">{m.email ?? '—'}</td>
-                  <td className="py-2 text-right text-xs text-gray-500 uppercase">{m.role}</td>
-                </tr>
-              ))}
+              {team.members.map((m) => {
+                const isSelf = m.id === user?.id
+                const canRemoveThis = isSelf || canManageMembers
+                const canPromoteThis = canManageMembers && m.role === 'member'
+                return (
+                  <tr key={m.id} className="border-b border-gray-800 last:border-0">
+                    <td className="py-2 font-mono text-gray-200">
+                      {m.username}
+                      {isSelf && <span className="ml-2 text-xs text-gray-600">(you)</span>}
+                    </td>
+                    <td className="py-2 text-gray-500">{m.email ?? '—'}</td>
+                    <td className="py-2 text-right text-xs text-gray-500 uppercase">{m.role}</td>
+                    <td className="py-2 pl-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        {canPromoteThis && (
+                          <button
+                            onClick={() => promoteToAdmin(m.id)}
+                            disabled={busy}
+                            className="text-xs text-cyan-400 hover:underline disabled:opacity-50"
+                          >
+                            Promote
+                          </button>
+                        )}
+                        {canRemoveThis && (
+                          <button
+                            onClick={() => setRemoveTarget(m)}
+                            disabled={busy}
+                            className="text-xs text-red-400 hover:underline disabled:opacity-50"
+                          >
+                            {isSelf ? 'Leave' : 'Remove'}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
               {team.members.length === 0 && (
                 <tr>
                   <td className="py-3 text-gray-600">No members yet.</td>
@@ -105,7 +207,104 @@ export default function TeamDetail() {
           ))}
         </div>
       </section>
+
+      {/* Remove/leave confirmation */}
+      {removeTarget && (
+        <Modal
+          title={removeTarget.id === user?.id ? 'Leave this team?' : `Remove @${removeTarget.username}?`}
+          onClose={() => setRemoveTarget(null)}
+        >
+          <p className="mb-5 text-sm text-gray-400">
+            {removeTarget.id === user?.id
+              ? "You'll lose access to this team's environments and members list. You can be re-added later."
+              : `@${removeTarget.username} will lose access to this team's environments and members list.`}
+            {removeTarget.role === 'team_admin' && (
+              <span className="mt-2 block text-amber-400">
+                If this is the team's last team_admin, removal will be blocked — promote another
+                member first.
+              </span>
+            )}
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setRemoveTarget(null)}
+              className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmRemove}
+              disabled={busy}
+              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+            >
+              {busy ? 'Removing…' : removeTarget.id === user?.id ? 'Leave Team' : 'Remove'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete team confirmation */}
+      {showDeleteTeam && (
+        <Modal title={`Delete ${team.name}?`} onClose={() => setShowDeleteTeam(false)}>
+          {blockingEnvironments.length > 0 ? (
+            <div>
+              <p className="mb-3 text-sm text-gray-400">
+                This team has {blockingEnvironments.length} environment(s) that aren't DESTROYED yet.
+                Destroy (or resolve any FAILED ones) before deleting the team:
+              </p>
+              <ul className="mb-5 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-800 bg-gray-950 p-3">
+                {blockingEnvironments.map((e) => (
+                  <li key={e.id} className="flex items-center justify-between text-xs">
+                    <span className="font-mono text-gray-300">{e.name}</span>
+                    <StatusBadge status={e.status} />
+                  </li>
+                ))}
+              </ul>
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setShowDeleteTeam(false)}
+                  className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p className="mb-5 text-sm text-gray-400">
+                All {team.members.length} member(s) will lose access to this team immediately. This
+                cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowDeleteTeam(false)}
+                  className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDeleteTeam}
+                  disabled={busy}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+                >
+                  {busy ? 'Deleting…' : 'Delete Team'}
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
+  )
+}
+
+function BackLink() {
+  return (
+    <Link to="/teams" className="mb-4 inline-block text-xs text-gray-500 hover:text-gray-300">
+      ← Back to Teams
+    </Link>
   )
 }
 
