@@ -74,3 +74,24 @@ class AddMemberRequest(BaseModel):
         if v not in VALID_ROLES:
             raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
         return v
+
+
+class UpdateMemberRoleRequest(BaseModel):
+    """Body for PATCH /teams/{id}/members/{user_id}/role — promotes or
+    demotes an existing member within that team. Distinct from
+    PATCH /users/{id}/role (see routers/users.py), which is platform-wide
+    and super_admin-only; this one is team-scoped."""
+
+    role: str = Field(...)
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_valid(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
+        return v
+
+
+class TeamDeleteResponse(BaseModel):
+    ok: bool
+    detached_members: List[str]  # usernames, for the confirmation UI
