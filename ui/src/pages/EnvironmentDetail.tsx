@@ -5,6 +5,7 @@ import StatusBadge from '../components/StatusBadge'
 import HealthIndicator from '../components/HealthIndicator'
 import RunbookViewer from '../components/RunbookViewer'
 import TTLCountdown from '../components/TTLCountdown'
+import { useEnvironmentActions } from '../hooks/useEnvironmentActions'
 import { formatUTC } from '../lib/format'
 
 type Tab = 'outputs' | 'runbook' | 'audit' | 'cost'
@@ -35,6 +36,8 @@ export default function EnvironmentDetail() {
       if (err instanceof APIError && err.status === 404) setNotFound(true)
     }
   }, [id])
+
+  const actions = useEnvironmentActions(fetchEnv)
 
   useEffect(() => {
     fetchEnv()
@@ -79,6 +82,24 @@ export default function EnvironmentDetail() {
         <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs font-mono uppercase text-gray-400">
           {env.env_type}
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => actions.promptExtend(env)}
+            disabled={!actions.canExtend(env)}
+            className="rounded-md border border-amber-900 px-3 py-1.5 text-xs font-semibold text-amber-400
+                       hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+          >
+            Extend TTL
+          </button>
+          <button
+            onClick={() => actions.promptDestroy(env)}
+            disabled={!actions.canDestroy(env)}
+            className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400
+                       hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+          >
+            Destroy
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -112,6 +133,8 @@ export default function EnvironmentDetail() {
       {tab === 'runbook' && <RunbookTab env={env} />}
       {tab === 'audit' && <AuditTab envId={env.id} />}
       {tab === 'cost' && <CostTab env={env} />}
+
+      {actions.modals()}
     </div>
   )
 }
