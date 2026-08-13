@@ -314,6 +314,19 @@ def add_member(
             detail="User not found — they must log in with GitHub at least once first",
         )
 
+    # A team-scoped action must never be able to write a role onto a
+    # super_admin — that field is platform-wide, not team-wide, and a
+    # team_admin has no authority over it. Without this guard, adding an
+    # existing super_admin to a team here would silently overwrite their
+    # role with whatever `body.role` was (typically "member"), permanently
+    # corrupting their platform privileges.
+    if user.role == "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot change a super_admin's role via team management. "
+            "Use PATCH /users/{id}/role instead.",
+        )
+
     user.team_id = team.id
     user.role = body.role
 
@@ -372,6 +385,16 @@ def update_member_role(
     target = db.query(User).filter(User.id == user_id, User.team_id == team_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    # Same guard as add_member: a team-scoped role change must never touch
+    # a super_admin's role, even if they happen to have a team_id set. See
+    # that endpoint's comment for the full reasoning.
+    if target.role == "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot change a super_admin's role via team management. "
+            "Use PATCH /users/{id}/role instead.",
+        )
 
     if body.role != "team_admin" and _is_last_team_admin(db, team_id, target):
         raise HTTPException(
