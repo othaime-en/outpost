@@ -391,3 +391,45 @@ def test_super_admin_can_delete_any_team(client, super_admin_token, test_team):
 def test_plain_member_cannot_delete_team(client, member_token, test_team):
     resp = client.delete(f"/teams/{test_team.id}", headers=_auth(member_token))
     assert resp.status_code == 403
+
+
+# --- Hotfix: team-scoped role writes must never touch a super_admin -------
+# Regression coverage for a real bug: adding an existing super_admin to a
+# team (or editing their team role afterward) silently overwrote their
+# platform-wide role, permanently downgrading them. Both endpoints must
+# refuse outright rather than merely "protect" the value.
+
+
+def test_add_member_cannot_downgrade_a_super_admin(
+    client, team_admin_token, test_team, super_admin_user, db_session
+):
+    resp = client.post(
+        f"/teams/{test_team.id}/members",
+        json={"github_username": super_admin_user.username, "role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 403
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.role == "super_admin"
+    assert super_admin_user.team_id is None
+
+
+def test_update_member_role_cannot_downgrade_a_super_admin(
+    client, team_admin_token, test_team, super_admin_user, db_session
+):
+    # Simulate a super_admin who already has a team_id set (e.g. from
+    # before this hotfix, or added directly in the DB) to confirm the
+    # endpoint itself still refuses to touch their role.
+    super_admin_user.team_id = test_team.id
+    db_session.commit()
+
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{super_admin_user.id}/role",
+        json={"role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 403
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.role == "super_admin"
