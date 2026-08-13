@@ -355,9 +355,18 @@ def test_delete_team_succeeds_when_all_environments_destroyed(
     # Team row persists (soft delete — see the Team model's docstring for
     # why a hard delete isn't possible once a team has any environment
     # history), but is marked deleted and excluded from normal lookups.
+    #
+    # The delete happened through `client`, which runs the request against
+    # its own separate SessionLocal() (via the app's get_db dependency) —
+    # not the `db_session` used here for setup/teardown. `db_session`'s
+    # identity map still holds the Python object it originally created
+    # test_team from, and a plain query for that same primary key returns
+    # that cached instance's attributes as-is rather than re-reading them
+    # from Postgres. db_session.refresh() forces it to re-fetch this row.
     from app.models.team import Team as TeamModel
 
     deleted_team = db_session.query(TeamModel).filter(TeamModel.id == test_team.id).first()
+    db_session.refresh(deleted_team)
     assert deleted_team is not None
     assert deleted_team.deleted_at is not None
 
