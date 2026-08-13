@@ -205,3 +205,240 @@ def test_team_admin_can_add_member_to_own_team(client, team_admin_token, test_te
     )
     assert resp.status_code == 200
     assert resp.json()["team_id"] == str(test_team.id)
+
+
+# --- PATCH /teams/{id}/members/{user_id}/role — promote/demote existing member ---
+
+
+def test_team_admin_can_promote_member_to_team_admin(
+    client, team_admin_token, test_team, member_user
+):
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{member_user.id}/role",
+        json={"role": "team_admin"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "team_admin"
+
+
+def test_team_admin_cannot_grant_super_admin(client, team_admin_token, test_team, member_user):
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{member_user.id}/role",
+        json={"role": "super_admin"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 403
+
+
+def test_cannot_demote_the_last_team_admin(client, team_admin_token, test_team, team_admin_user):
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{team_admin_user.id}/role",
+        json={"role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 400
+
+
+def test_demoting_non_last_team_admin_succeeds(
+    client, team_admin_token, test_team, team_admin_user, member_user, db_session
+):
+    # Promote member_user to team_admin first, so team_admin_user is no
+    # longer the *last* one and can safely be demoted.
+    member_user.role = "team_admin"
+    db_session.commit()
+
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{team_admin_user.id}/role",
+        json={"role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "member"
+
+
+def test_plain_member_cannot_change_roles(client, member_token, test_team, member_user):
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{member_user.id}/role",
+        json={"role": "team_admin"},
+        headers=_auth(member_token),
+    )
+    assert resp.status_code == 403
+
+
+# --- DELETE /teams/{id}/members/{user_id} — self-serve or forced removal ---
+
+
+def test_member_can_remove_self(client, member_token, member_user, test_team, db_session):
+    resp = client.delete(f"/teams/{test_team.id}/members/{member_user.id}", headers=_auth(member_token))
+    assert resp.status_code == 200
+    db_session.refresh(member_user)
+    assert member_user.team_id is None
+    assert member_user.role == "member"
+
+
+def test_team_admin_can_forcibly_remove_another_member(
+    client, team_admin_token, member_user, test_team, db_session
+):
+    resp = client.delete(f"/teams/{test_team.id}/members/{member_user.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 200
+    db_session.refresh(member_user)
+    assert member_user.team_id is None
+
+
+def test_member_cannot_remove_someone_else(client, member_token, team_admin_user, test_team):
+    resp = client.delete(
+        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(member_token)
+    )
+    assert resp.status_code == 403
+
+
+def test_cannot_remove_the_last_team_admin(client, team_admin_token, team_admin_user, test_team):
+    resp = client.delete(
+        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token)
+    )
+    assert resp.status_code == 400
+
+
+def test_last_team_admin_can_leave_after_promoting_a_peer(
+    client, team_admin_token, team_admin_user, member_user, test_team, db_session
+):
+    member_user.role = "team_admin"
+    db_session.commit()
+
+    resp = client.delete(
+        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token)
+    )
+    assert resp.status_code == 200
+    db_session.refresh(team_admin_user)
+    assert team_admin_user.team_id is None
+
+
+# --- DELETE /teams/{id} — blocked on non-destroyed environments, auto-detaches members ---
+
+
+def test_delete_team_blocked_by_non_destroyed_environment(
+    client, team_admin_token, test_team, member_user, make_environment
+):
+    make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 400
+
+
+def test_delete_team_blocked_by_failed_environment(
+    client, team_admin_token, test_team, member_user, make_environment
+):
+    """FAILED environments block deletion too — they can have
+    partially-provisioned resources needing manual resolution first."""
+    make_environment(team_id=test_team.id, created_by=member_user.id, status="FAILED")
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 400
+
+
+def test_delete_team_succeeds_when_all_environments_destroyed(
+    client, team_admin_token, team_admin_user, test_team, member_user, make_environment, db_session
+):
+    make_environment(team_id=test_team.id, created_by=member_user.id, status="DESTROYED")
+
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert member_user.username in body["detached_members"]
+    assert team_admin_user.username in body["detached_members"]
+
+    db_session.refresh(member_user)
+    db_session.refresh(team_admin_user)
+    assert member_user.team_id is None
+    assert team_admin_user.team_id is None
+
+    # Team row persists (soft delete — see the Team model's docstring for
+    # why a hard delete isn't possible once a team has any environment
+    # history), but is marked deleted and excluded from normal lookups.
+    #
+    # The delete happened through `client`, which runs the request against
+    # its own separate SessionLocal() (via the app's get_db dependency) —
+    # not the `db_session` used here for setup/teardown. `db_session`'s
+    # identity map still holds the Python object it originally created
+    # test_team from, and a plain query for that same primary key returns
+    # that cached instance's attributes as-is rather than re-reading them
+    # from Postgres. db_session.refresh() forces it to re-fetch this row.
+    from app.models.team import Team as TeamModel
+
+    deleted_team = db_session.query(TeamModel).filter(TeamModel.id == test_team.id).first()
+    db_session.refresh(deleted_team)
+    assert deleted_team is not None
+    assert deleted_team.deleted_at is not None
+
+    get_resp = client.get(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert get_resp.status_code == 404
+
+
+def test_delete_team_succeeds_with_no_environments_at_all(
+    client, team_admin_token, test_team
+):
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 200
+
+
+def test_team_admin_cannot_delete_other_teams(client, team_admin_token, db_session):
+    other_team = Team(name=f"Other Delete Team {uuid.uuid4().hex[:6]}", slug=f"other-delete-{uuid.uuid4().hex[:6]}")
+    db_session.add(other_team)
+    db_session.commit()
+    db_session.refresh(other_team)
+    db_session.track_team(other_team)
+
+    resp = client.delete(f"/teams/{other_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 403
+
+
+def test_super_admin_can_delete_any_team(client, super_admin_token, test_team):
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(super_admin_token))
+    assert resp.status_code == 200
+
+
+def test_plain_member_cannot_delete_team(client, member_token, test_team):
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(member_token))
+    assert resp.status_code == 403
+
+
+# --- Hotfix: team-scoped role writes must never touch a super_admin -------
+# Regression coverage for a real bug: adding an existing super_admin to a
+# team (or editing their team role afterward) silently overwrote their
+# platform-wide role, permanently downgrading them. Both endpoints must
+# refuse outright rather than merely "protect" the value.
+
+
+def test_add_member_cannot_downgrade_a_super_admin(
+    client, team_admin_token, test_team, super_admin_user, db_session
+):
+    resp = client.post(
+        f"/teams/{test_team.id}/members",
+        json={"github_username": super_admin_user.username, "role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 403
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.role == "super_admin"
+    assert super_admin_user.team_id is None
+
+
+def test_update_member_role_cannot_downgrade_a_super_admin(
+    client, team_admin_token, test_team, super_admin_user, db_session
+):
+    # Simulate a super_admin who already has a team_id set (e.g. from
+    # before this hotfix, or added directly in the DB) to confirm the
+    # endpoint itself still refuses to touch their role.
+    super_admin_user.team_id = test_team.id
+    db_session.commit()
+
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{super_admin_user.id}/role",
+        json={"role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 403
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.role == "super_admin"

@@ -140,6 +140,11 @@ export interface AddMemberBody {
   role: Role
 }
 
+export interface TeamDeleteResult {
+  ok: boolean
+  detached_members: string[]
+}
+
 /**
  * Server-side filters for GET /environments. All optional — an empty object
  * is the same as calling listEnvironments() with no filters, which excludes
@@ -271,6 +276,18 @@ class APIClient {
       method: 'POST',
       body: JSON.stringify(body),
     })
+
+  updateMemberRole = (teamId: string, userId: string, role: Role) =>
+    this.request<User>(`/teams/${teamId}/members/${userId}/role`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    })
+
+  removeTeamMember = (teamId: string, userId: string) =>
+    this.request<User>(`/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
+
+  deleteTeam = (teamId: string) =>
+    this.request<TeamDeleteResult>(`/teams/${teamId}`, { method: 'DELETE' })
 
   // --- Users --------------------------------------------------------------
   listUsers = () => this.request<User[]>('/users/')

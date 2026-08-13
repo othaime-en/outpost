@@ -68,21 +68,14 @@ class TestGenerateAPIKey:
 
 
 class TestTeamRBAC:
-    def test_member_cannot_create_team(self, client: TestClient, member_token):
-        response = client.post(
-            "/teams/",
-            json={"name": f"Fail {uuid.uuid4().hex[:6]}", "slug": f"fail-{uuid.uuid4().hex[:6]}"},
-            headers={"Authorization": f"Bearer {member_token}"},
-        )
-        assert response.status_code == 403
-
-    def test_team_admin_cannot_create_team(self, client: TestClient, team_admin_token):
-        response = client.post(
-            "/teams/",
-            json={"name": f"Fail {uuid.uuid4().hex[:6]}", "slug": f"fail-{uuid.uuid4().hex[:6]}"},
-            headers={"Authorization": f"Bearer {team_admin_token}"},
-        )
-        assert response.status_code == 403
+    # NOTE: test_member_cannot_create_team and test_team_admin_cannot_create_team
+    # used to live here, asserting 403 for any non-super_admin creating a team.
+    # That was the original super_admin-only creation model. Team creation is
+    # now self-serve for any authenticated user (see routers/teams.py's module
+    # docstring for the RBAC change) — a member/team_admin creating a team now
+    # correctly gets 400 ("already on a team"), not 403. That behavior is
+    # covered in test_teams.py: test_user_already_on_a_team_cannot_self_serve_create
+    # and test_teamless_member_can_self_serve_create_team.
 
     def test_super_admin_can_create_team(self, client: TestClient, super_admin_token, db_session):
         slug = f"new-team-{uuid.uuid4().hex[:8]}"
