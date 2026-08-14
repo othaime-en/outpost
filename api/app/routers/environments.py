@@ -17,6 +17,44 @@ visible to the caller, DESTROYED included. Dashboard usage showed that grows
 unbounded and unusable over time, so list_environments() now accepts filter
 and sort query params (see the docstring on that function), and DESTROYED
 environments are excluded by default unless explicitly asked for.
+
+MULTI-TEAM MEMBERSHIP MIGRATION — what changed in this file and why.
+
+  - CreateEnvironmentRequest now requires an explicit `team_id`. Under the
+    old single-team model, which team a new environment belonged to was
+    implicit (current_user.team_id) — there was only ever one right
+    answer. Now that a user can belong to several teams, the caller has to
+    say which one; create_environment() validates the requested team_id
+    against the caller's actual memberships via has_team_role() rather
+    than trusting it blindly.
+
+  - _assert_team_visibility() (get_environment, extend_ttl, get_runbook,
+    get_cost_snapshots) now checks has_team_role(current_user, env.team_id)
+    instead of comparing env.team_id to a single current_user.team_id.
+    Same question ("can this user see this environment's team"), answered
+    against however many memberships the caller actually has.
+
+  - list_environments()'s `team_id` filter query param is no longer
+    super_admin-exclusive. Under the old model a non-super_admin was
+    always scoped to exactly one team, so a filter param would have been
+    redundant for them. Under multi-team, a caller on several teams needs
+    a way to narrow the dashboard down to one — so the param now works for
+    anyone, validated to be one of the caller's own teams (super_admin can
+    still pass any team_id, unrestricted, as before).
+
+  - destroy_environment()'s RBAC now resolves the caller's role SCOPED TO
+    THIS ENVIRONMENT'S TEAM via team_role(), rather than reading a single
+    global current_user.role. A user who is team_admin on Team A and has
+    no membership at all on Team B should not be able to lean on their
+    Team A admin status to destroy a Team B environment — under the old
+    model this couldn't happen (one team per user), so there was no
+    explicit "not a member of this team at all" branch. There is now.
+
+  - require_member is gone from every handler in this file — it never
+    actually checked anything beyond "is this a logged-in user" (see
+    middleware/rbac.py's docstring), so those Depends() now call
+    get_current_user directly. Real authorization is, as before, the
+    explicit team_role()/has_team_role() checks in each handler body.
 """
 
 from __future__ import annotations
@@ -29,11 +67,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.middleware.rbac import require_callback_secret, require_member
+from app.middleware.auth import get_current_user
+from app.middleware.rbac import has_team_role, require_callback_secret, team_role
 from app.models.audit_log import AuditLog
 from app.models.cost_snapshot import CostSnapshot
 from app.models.environment import Environment
 from app.models.runbook import Runbook
+from app.models.team import Team
 from app.models.user import User
 from app.schemas.environment import (
     VALID_ENV_TYPES,
@@ -138,8 +178,9 @@ def _get_env_or_404(db: Session, env_id: str) -> Environment:
 
 
 def _assert_team_visibility(env: Environment, current_user: User) -> None:
-    """super_admin sees everything; everyone else is scoped to their team."""
-    if current_user.role != "super_admin" and str(env.team_id) != str(current_user.team_id):
+    """super_admin sees everything; everyone else needs a membership
+    (any role) on this environment's team."""
+    if not has_team_role(current_user, env.team_id):
         raise HTTPException(status_code=403, detail="Not your team's environment")
 
 
@@ -176,7 +217,7 @@ def get_expired(db: Session = Depends(get_db), _=Depends(require_callback_secret
 @router.get("/", response_model=EnvironmentListResponse)
 def list_environments(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
     statuses: Optional[List[str]] = Query(
         default=None,
         alias="status",
@@ -185,8 +226,8 @@ def list_environments(
     ),
     team_id: Optional[str] = Query(
         default=None,
-        description="super_admin only — filters to one team. Ignored for everyone else, "
-        "since they're already scoped to their own team.",
+        description="Filter to one team. For a super_admin, any team_id. For everyone else, "
+        "must be one of the caller's own team memberships — otherwise 403.",
     ),
     env_type: Optional[str] = Query(default=None, description="'dev' or 'staging'"),
     health_status: Optional[str] = Query(default=None, description="HEALTHY | DEGRADED | UNKNOWN"),
@@ -207,9 +248,12 @@ def list_environments(
     List environments visible to the caller, with optional server-side
     filtering and sorting.
 
-    Team scoping (unchanged): non-super_admin users only ever see their own
-    team's environments, regardless of the `team_id` param — that param only
-    does anything for a super_admin looking across teams.
+    Team scoping: super_admin sees every team's environments. Everyone else
+    sees environments across ALL of their own team memberships by default —
+    a user on two teams sees both teams' environments in one call. Passing
+    `team_id` narrows to one specific team; for a non-super_admin that team
+    must be one of their own memberships (403 otherwise), since this param
+    is a narrowing filter, not a way to see outside your own teams.
 
     DESTROYED environments are excluded unless the caller either passes
     `include_destroyed=true` or explicitly filters `status=DESTROYED` — a
@@ -220,10 +264,16 @@ def list_environments(
         joinedload(Environment.team), joinedload(Environment.creator)
     )
 
-    if current_user.role != "super_admin":
-        query = query.filter(Environment.team_id == current_user.team_id)
-    elif team_id:
+    is_super = current_user.platform_role == "super_admin"
+    if team_id:
+        if not is_super and not has_team_role(current_user, team_id):
+            raise HTTPException(status_code=403, detail="Not your team")
         query = query.filter(Environment.team_id == team_id)
+    elif not is_super:
+        own_team_ids = [m.team_id for m in current_user.team_memberships]
+        if not own_team_ids:
+            return []
+        query = query.filter(Environment.team_id.in_(own_team_ids))
 
     if statuses:
         invalid = set(statuses) - VALID_ENV_STATUSES
@@ -272,19 +322,23 @@ def list_environments(
 def create_environment(
     body: CreateEnvironmentRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
-    if not current_user.team_id:
+    if not has_team_role(current_user, body.team_id):
         raise HTTPException(
-            status_code=400,
-            detail="You must belong to a team to provision environments",
+            status_code=403,
+            detail="You are not a member of the requested team",
         )
+
+    team = db.query(Team).filter(Team.id == body.team_id, Team.deleted_at.is_(None)).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
 
     env_id = uuid.uuid4()
     env = Environment(
         id=env_id,
         name=body.name,
-        team_id=current_user.team_id,
+        team_id=team.id,
         created_by=current_user.id,
         env_type=body.env_type,
         status="PENDING",
@@ -301,6 +355,7 @@ def create_environment(
         actor_id=current_user.id,
         metadata={
             "env_name": body.name,
+            "team_id": str(team.id),
             "env_type": body.env_type,
             "ttl_hours": body.ttl_hours,
         },
@@ -312,7 +367,7 @@ def create_environment(
     terraform.trigger_provision(
         env_id=str(env_id),
         env_name=body.name,
-        team=current_user.team.slug,
+        team=team.slug,
         env_type=body.env_type,
         ttl_hours=body.ttl_hours,
         region=body.aws_region,
@@ -325,7 +380,7 @@ def create_environment(
 def get_environment(
     env_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     env = _get_env_or_404(db, env_id)
     _assert_team_visibility(env, current_user)
@@ -336,7 +391,7 @@ def get_environment(
 def destroy_environment(
     env_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     env = _get_env_or_404(db, env_id)
 
@@ -346,11 +401,17 @@ def destroy_environment(
             detail=f"Cannot destroy environment with status: {env.status}",
         )
 
-    # RBAC: member → own envs only, team_admin → own team, super_admin → any.
-    if current_user.role == "member" and str(env.created_by) != str(current_user.id):
+    # RBAC, scoped to THIS environment's team specifically:
+    #   no membership on this team (and not super_admin) -> can't act at all
+    #   member on this team                               -> own envs only
+    #   team_admin on this team / super_admin              -> any env on the team
+    is_super = current_user.platform_role == "super_admin"
+    role = team_role(current_user, env.team_id)
+
+    if role is None and not is_super:
+        raise HTTPException(status_code=403, detail="You are not a member of this environment's team")
+    if role == "member" and str(env.created_by) != str(current_user.id) and not is_super:
         raise HTTPException(status_code=403, detail="You can only destroy your own environments")
-    if current_user.role == "team_admin" and str(env.team_id) != str(current_user.team_id):
-        raise HTTPException(status_code=403, detail="You can only destroy your team's environments")
 
     env.status = "DESTROYING"
     _audit(
@@ -372,7 +433,7 @@ def extend_ttl(
     env_id: str,
     body: ExtendTTLRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     env = _get_env_or_404(db, env_id)
     _assert_team_visibility(env, current_user)
@@ -458,7 +519,7 @@ def environment_callback(
 def get_runbook(
     env_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     env = _get_env_or_404(db, env_id)
     _assert_team_visibility(env, current_user)
@@ -479,7 +540,7 @@ def get_runbook(
 def get_cost_snapshots(
     env_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Reads whatever actual-cost rows exist for this environment.
