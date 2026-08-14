@@ -1,8 +1,8 @@
 """
 Team ORM Model
 
-A Team is a logical grouping of users. Every environment is owned by a team,
-and RBAC rules are scoped to team membership.
+A Team is a logical grouping of users. Every environment is owned by
+exactly one team, and RBAC rules are scoped to team membership.
 
 The `slug` field is particularly important — it's used as a tag value on all
 AWS resources provisioned for that team's environments. This is how Cost Explorer
@@ -17,8 +17,11 @@ environment — which is effectively every team that's actually been used.
 See routers/teams.py's delete_team() for the enforcement.
 
 Relationships:
-  Team → User:        one-to-many (a team has many users)
-  Team → Environment: one-to-many (a team has many environments)
+  Team → TeamMembership: one-to-many (a team has many memberships — this
+                          replaces the old direct Team → User relationship
+                          now that a user can belong to more than one team;
+                          reach members via membership.user)
+  Team → Environment:    one-to-many (a team has many environments)
 """
 
 import uuid
@@ -62,7 +65,5 @@ class Team(Base):
     )
 
     # --- Relationships ---
-    # These tell SQLAlchemy how to JOIN to related tables.
-    # `back_populates` creates a two-way link: team.users AND user.team both work.
-    users = relationship("User", back_populates="team")
+    memberships = relationship("TeamMembership", back_populates="team")
     environments = relationship("Environment", back_populates="team")
