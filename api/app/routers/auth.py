@@ -8,6 +8,22 @@ GitHub OAuth flow:
      find-or-create the local User row, mint our own JWT, and redirect the
      browser to the frontend with the JWT in the URL *fragment*
      (FRONTEND_URL/callback#token=...).
+
+MULTI-TEAM CHANGE — _create_jwt: the payload now carries ONLY {user_id, exp}.
+It used to also embed team_id and role, but get_current_user's JWT decode
+path never actually read those two claims (only user_id) — so removing them
+changes nothing about how requests are authorized, only what's sitting
+inside the token. Worth removing anyway, for two reasons:
+
+  1. Under multi-team, "team_id" is no longer well-defined for a user with
+     zero, or more than one, team — embedding a single value would just be
+     wrong on its face for those users.
+  2. Even where it happened to be accurate, embedding authorization data in
+     a 24h-lived token means a role change or team removal wouldn't take
+     effect until the token expired. Authorization is resolved fresh from
+     the DB on every request instead (see middleware/auth.py, rbac.py) —
+     a super_admin demoting someone takes effect on that user's very next
+     request, not after a token refresh.
 """
 
 from __future__ import annotations
@@ -21,14 +37,16 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from passlib.hash import bcrypt
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.database import get_db
 from app.middleware.auth import JWT_ALGORITHM, get_current_user
 from app.models.audit_log import AuditLog
+from app.models.team_membership import TeamMembership
 from app.models.user import User
 from app.schemas.auth import ApiKeyResponse, UserProfile
+from app.schemas.user import TeamMembershipOut
 
 router = APIRouter()
 
@@ -41,8 +59,6 @@ GITHUB_EMAILS_API = "https://api.github.com/user/emails"
 def _create_jwt(user: User) -> str:
     payload = {
         "user_id": str(user.id),
-        "team_id": str(user.team_id) if user.team_id else None,
-        "role": user.role,
         "exp": datetime.now(timezone.utc) + timedelta(hours=24),
     }
     return jwt.encode(payload, settings.secret_key, algorithm=JWT_ALGORITHM)
@@ -59,6 +75,36 @@ def _fetch_primary_email(gh_access_token: str) -> Optional[str]:
         return None
     primary = next((e for e in resp.json() if e.get("primary")), None)
     return primary["email"] if primary else None
+
+
+def _profile_response(user: User, db: Session) -> UserProfile:
+    """
+    Builds the /auth/me response. Queries team_memberships joined to Team
+    for team_name/team_slug — user.team_memberships (eager-loaded by
+    get_current_user) has the membership rows but not each team's name/slug,
+    which UserProfile needs for display.
+    """
+    memberships = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.team))
+        .filter(TeamMembership.user_id == user.id)
+        .all()
+    )
+    return UserProfile(
+        id=str(user.id),
+        username=user.username,
+        email=user.email,
+        platform_role=user.platform_role,
+        team_memberships=[
+            TeamMembershipOut(
+                team_id=str(m.team_id),
+                team_name=m.team.name,
+                team_slug=m.team.slug,
+                role=m.role,
+            )
+            for m in memberships
+        ],
+    )
 
 
 @router.get("/github")
@@ -115,7 +161,7 @@ def github_callback(code: str, db: Session = Depends(get_db)):
             github_id=gh_user["id"],
             username=gh_user["login"],
             email=email,
-            role="member",
+            platform_role="user",
         )
         db.add(user)
     else:
@@ -155,11 +201,5 @@ def generate_api_key(
 
 
 @router.get("/me", response_model=UserProfile)
-def get_me(current_user: User = Depends(get_current_user)):
-    return UserProfile(
-        id=str(current_user.id),
-        username=current_user.username,
-        email=current_user.email,
-        role=current_user.role,
-        team_id=str(current_user.team_id) if current_user.team_id else None,
-    )
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _profile_response(current_user, db)
