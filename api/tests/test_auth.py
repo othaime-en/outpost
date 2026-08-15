@@ -31,7 +31,12 @@ class TestJWTAuth:
         body = response.json()
         assert body["id"] == str(member_user.id)
         assert body["username"] == member_user.username
-        assert body["role"] == "member"
+        # "role" no longer exists as a flat field — member_user's platform
+        # role is the ordinary 'user' (not a super_admin), and their
+        # team-scoped 'member' role shows up in team_memberships instead.
+        assert body["platform_role"] == "user"
+        assert len(body["team_memberships"]) == 1
+        assert body["team_memberships"][0]["role"] == "member"
 
     def test_me_with_garbage_jwt_returns_401(self, client: TestClient):
         response = client.get("/auth/me", headers={"Authorization": "Bearer not-a-real-token"})
@@ -68,14 +73,6 @@ class TestGenerateAPIKey:
 
 
 class TestTeamRBAC:
-    # NOTE: test_member_cannot_create_team and test_team_admin_cannot_create_team
-    # used to live here, asserting 403 for any non-super_admin creating a team.
-    # That was the original super_admin-only creation model. Team creation is
-    # now self-serve for any authenticated user (see routers/teams.py's module
-    # docstring for the RBAC change) — a member/team_admin creating a team now
-    # correctly gets 400 ("already on a team"), not 403. That behavior is
-    # covered in test_teams.py: test_user_already_on_a_team_cannot_self_serve_create
-    # and test_teamless_member_can_self_serve_create_team.
 
     def test_super_admin_can_create_team(self, client: TestClient, super_admin_token, db_session):
         slug = f"new-team-{uuid.uuid4().hex[:8]}"
@@ -107,17 +104,6 @@ class TestTeamRBAC:
         )
         assert response.status_code == 403
 
-    def test_team_admin_can_add_member_to_own_team(
-        self, client: TestClient, team_admin_token, test_team, member_user
-    ):
-        response = client.post(
-            f"/teams/{test_team.id}/members",
-            json={"github_username": member_user.username, "role": "member"},
-            headers={"Authorization": f"Bearer {team_admin_token}"},
-        )
-        assert response.status_code == 200
-        assert response.json()["username"] == member_user.username
-
     def test_team_admin_cannot_add_member_to_other_team(
         self, client: TestClient, team_admin_token, super_admin_token, db_session
     ):
@@ -137,16 +123,7 @@ class TestTeamRBAC:
         )
         assert response.status_code == 403
 
-    def test_team_admin_cannot_grant_super_admin(
-        self, client: TestClient, team_admin_token, test_team, member_user
-    ):
-        response = client.post(
-            f"/teams/{test_team.id}/members",
-            json={"github_username": member_user.username, "role": "super_admin"},
-            headers={"Authorization": f"Bearer {team_admin_token}"},
-        )
-        assert response.status_code == 403
-
+    
     def test_add_member_for_unknown_username_returns_404(
         self, client: TestClient, team_admin_token, test_team
     ):
@@ -159,10 +136,19 @@ class TestTeamRBAC:
 
 
 class TestUserRoleRBAC:
+    """
+    PATCH /users/{id}/role is platform-scoped only — see routers/users.py's
+    module docstring. ChangeRoleRequest is validated against PLATFORM_ROLES
+    ({"user", "super_admin"}), NOT the team-scoped TEAM_ROLES — "team_admin"
+    is not a meaningful value here anymore, since it's exclusively a
+    TeamMembership concept now. These tests promote to "super_admin", the
+    only non-trivial platform role change left.
+    """
+
     def test_only_super_admin_can_change_role(self, client: TestClient, team_admin_token, member_user):
         response = client.patch(
             f"/users/{member_user.id}/role",
-            json={"role": "team_admin"},
+            json={"role": "super_admin"},
             headers={"Authorization": f"Bearer {team_admin_token}"},
         )
         assert response.status_code == 403
@@ -170,16 +156,16 @@ class TestUserRoleRBAC:
     def test_super_admin_can_change_role(self, client: TestClient, super_admin_token, member_user):
         response = client.patch(
             f"/users/{member_user.id}/role",
-            json={"role": "team_admin"},
+            json={"role": "super_admin"},
             headers={"Authorization": f"Bearer {super_admin_token}"},
         )
         assert response.status_code == 200
-        assert response.json()["role"] == "team_admin"
+        assert response.json()["platform_role"] == "super_admin"
 
     def test_change_role_for_unknown_user_returns_404(self, client: TestClient, super_admin_token):
         response = client.patch(
             f"/users/{uuid.uuid4()}/role",
-            json={"role": "team_admin"},
+            json={"role": "super_admin"},
             headers={"Authorization": f"Bearer {super_admin_token}"},
         )
         assert response.status_code == 404
@@ -188,6 +174,19 @@ class TestUserRoleRBAC:
         response = client.patch(
             f"/users/{member_user.id}/role",
             json={"role": "wizard"},
+            headers={"Authorization": f"Bearer {super_admin_token}"},
+        )
+        assert response.status_code == 422
+
+    def test_change_role_rejects_team_admin_as_a_platform_role(
+        self, client: TestClient, super_admin_token, member_user
+    ):
+        """'team_admin' is a valid TEAM_ROLES value but NOT a valid
+        PLATFORM_ROLES value — this endpoint must reject it, since it would
+        otherwise be meaningless (platform_role has no concept of which team)."""
+        response = client.patch(
+            f"/users/{member_user.id}/role",
+            json={"role": "team_admin"},
             headers={"Authorization": f"Bearer {super_admin_token}"},
         )
         assert response.status_code == 422
