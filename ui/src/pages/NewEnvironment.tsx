@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { api, APIError, type CostBreakdown, type EnvType } from '../api/client'
+import { Link, useNavigate } from 'react-router-dom'
+import { api, APIError, type CostBreakdown, type EnvType, type Team } from '../api/client'
 
 const NAME_PATTERN = /^[a-z0-9-]+$/
 
 export default function NewEnvironment() {
   const navigate = useNavigate()
+  const [teams, setTeams] = useState<Team[] | null>(null)
+  const [teamsError, setTeamsError] = useState<string | null>(null)
+  const [teamId, setTeamId] = useState('')
+
   const [name, setName] = useState('')
   const [envType, setEnvType] = useState<EnvType>('dev')
   const [ttlHours, setTtlHours] = useState(24)
@@ -13,6 +17,16 @@ export default function NewEnvironment() {
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api
+      .listTeams()
+      .then((result) => {
+        setTeams(result)
+        if (result.length >= 1) setTeamId(result[0].id)
+      })
+      .catch((err) => setTeamsError(err instanceof APIError ? err.message : 'Failed to load teams'))
+  }, [])
 
   // Cost preview updates automatically whenever env_type changes.
   useEffect(() => {
@@ -42,15 +56,49 @@ export default function NewEnvironment() {
       setFormError('Name must be lowercase alphanumeric with hyphens only.')
       return
     }
+    if (!teamId) {
+      setFormError('Select a team for this environment.')
+      return
+    }
     setFormError(null)
     setSubmitting(true)
     try {
-      const result = await api.createEnvironment({ name, env_type: envType, ttl_hours: ttlHours })
+      const result = await api.createEnvironment({ name, team_id: teamId, env_type: envType, ttl_hours: ttlHours })
       navigate('/', { state: { justCreated: result.env_id } })
     } catch (err) {
       setFormError(err instanceof APIError ? err.message : 'Failed to create environment')
       setSubmitting(false)
     }
+  }
+
+  if (teamsError) {
+    return (
+      <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+        {teamsError}
+      </div>
+    )
+  }
+
+  if (teams === null) {
+    return <p className="text-sm text-gray-500">Loading your teams…</p>
+  }
+
+  if (teams.length === 0) {
+    return (
+      <div>
+        <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-white">
+          New Environment
+        </h1>
+        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
+          <p className="mb-4 text-gray-400">
+            You need to belong to a team before you can provision an environment.
+          </p>
+          <Link to="/teams" className="text-cyan-400 hover:underline text-sm">
+            Create or join a team →
+          </Link>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -62,6 +110,23 @@ export default function NewEnvironment() {
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         {/* Left column — form */}
         <form onSubmit={handleSubmit} className="space-y-6">
+          {teams.length > 1 && (
+            <div>
+              <label className="mb-1 block text-sm text-gray-300">Team</label>
+              <select
+                value={teamId}
+                onChange={(e) => setTeamId(e.target.value)}
+                className="w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:border-cyan-600 focus:outline-none"
+              >
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.slug})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <label className="mb-1 block text-sm text-gray-300">Name</label>
             <input
@@ -123,7 +188,7 @@ export default function NewEnvironment() {
 
           <button
             type="submit"
-            disabled={submitting || !nameValid}
+            disabled={submitting || !nameValid || !teamId}
             className="w-full rounded-md bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-gray-950
                        hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
           >

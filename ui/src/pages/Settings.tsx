@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { api, APIError, type Role, type Team, type User } from '../api/client'
+import { isSuperAdmin } from '../lib/permissions'
+import { api, APIError, type PlatformRole, type User } from '../api/client'
 
-const ROLES: Role[] = ['member', 'team_admin', 'super_admin']
+const PLATFORM_ROLES: PlatformRole[] = ['user', 'super_admin']
 
 export default function Settings() {
   const { user } = useAuth()
@@ -12,7 +13,7 @@ export default function Settings() {
     <div className="space-y-10">
       <h1 className="font-display text-2xl font-semibold tracking-tight text-white">Settings</h1>
       <ApiKeySection />
-      {user.role === 'super_admin' && <PlatformAdminSection />}
+      {isSuperAdmin(user) && <PlatformAdminSection />}
     </div>
   )
 }
@@ -90,21 +91,8 @@ function ApiKeySection() {
   )
 }
 
-/**
- * super_admin-only. Team creation and member management have moved to the
- * Teams tab (see pages/Teams.tsx, pages/TeamDetail.tsx) now that both are
- * open to any authenticated user rather than super_admin-only — see
- * routers/teams.py's module docstring for that RBAC change.
- *
- * What's left here is deliberately team-agnostic: PATCH /users/{id}/role
- * works even for a user with no team_id at all (right after their first
- * GitHub login), which is exactly why it lives in routers/users.py rather
- * than routers/teams.py — see that router's own docstring. Settings is the
- * natural home for a team-agnostic admin action; a per-team page isn't.
- */
 function PlatformAdminSection() {
   const [users, setUsers] = useState<User[]>([])
-  const [teams, setTeams] = useState<Team[]>([])
   const [error, setError] = useState<string | null>(null)
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
 
@@ -113,10 +101,9 @@ function PlatformAdminSection() {
       .listUsers()
       .then(setUsers)
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load users'))
-    api.listTeams().then(setTeams).catch(() => setTeams([]))
   }, [])
 
-  async function updateRole(userId: string, newRole: Role) {
+  async function updateRole(userId: string, newRole: PlatformRole) {
     setUpdatingUserId(userId)
     setError(null)
     try {
@@ -129,13 +116,11 @@ function PlatformAdminSection() {
     }
   }
 
-  const teamSlugById = new Map(teams.map((t) => [t.id, t.slug]))
-
   return (
     <Section title="Platform Admin">
       <p className="mb-4 text-sm text-gray-400">
-        Change any user's role — including users not yet assigned to a team. To create a team or
-        manage a team's members, use the{' '}
+        Change any user's platform role — including users not yet assigned to a team. To create a
+        team or manage a team's members, use the{' '}
         <a href="/teams" className="text-cyan-400 hover:underline">
           Teams
         </a>{' '}
@@ -149,18 +134,20 @@ function PlatformAdminSection() {
             <tr key={u.id} className="border-b border-gray-800 last:border-0">
               <td className="py-2 font-mono text-gray-200">{u.username}</td>
               <td className="py-2 text-gray-500">
-                {u.team_id ? teamSlugById.get(u.team_id) ?? 'unknown team' : (
+                {u.team_memberships.length > 0 ? (
+                  u.team_memberships.map((m) => m.team_slug).join(', ')
+                ) : (
                   <span className="text-amber-500">no team</span>
                 )}
               </td>
               <td className="py-2 text-right">
                 <select
-                  value={u.role}
+                  value={u.platform_role}
                   disabled={updatingUserId === u.id}
-                  onChange={(e) => updateRole(u.id, e.target.value as Role)}
+                  onChange={(e) => updateRole(u.id, e.target.value as PlatformRole)}
                   className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none disabled:opacity-50"
                 >
-                  {ROLES.map((r) => (
+                  {PLATFORM_ROLES.map((r) => (
                     <option key={r} value={r}>
                       {r}
                     </option>

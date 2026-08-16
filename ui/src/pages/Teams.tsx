@@ -1,32 +1,83 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { isSuperAdmin } from '../lib/permissions'
 import { api, APIError, type Team } from '../api/client'
 import Modal from '../components/Modal'
 
 /**
- * Landing page for the new Teams nav item (see AppShell.tsx).
+ * Landing page for the Teams nav item (see AppShell.tsx).
  *
- * - super_admin: a grid of every team on the platform, plus "Create Team".
- * - team_admin / member with a team: redirected straight to their own
- *   team's detail page — there's nothing useful to show at a "list" of one.
- * - a teamless user: a self-serve "create your team" prompt.
+ * MULTI-TEAM MEMBERSHIP MIGRATION — this page's whole branching structure
+ * changed. The old version read `user.role`/`user.team_id` off AuthContext
+ * (a single team, cached at login) to decide which of three views to show.
+ * That single-team assumption is gone, and so is the AuthContext dependency
+ * entirely — this page now fetches `api.listTeams()` itself (already
+ * correctly scoped server-side: a caller's own teams, or everything for
+ * super_admin) and branches on how many teams came back:
+ *
+ *   - super_admin                    -> grid of every team on the platform
+ *   - non-super_admin, 0 teams       -> self-serve "create your first team"
+ *   - non-super_admin, exactly 1     -> redirect straight there (same UX
+ *                                        as the old single-team model — no
+ *                                        regression for the common case)
+ *   - non-super_admin, 2+ teams      -> grid of just THEIR teams (this is
+ *                                        the new capability: previously
+ *                                        impossible to even reach, since a
+ *                                        user could only ever be on one)
+ *
+ * Because this reads fresh from the API on every mount rather than from
+ * AuthContext's cached user object, there's no staleness problem when a
+ * user self-serve-creates their first team here: refreshing the list after
+ * creation naturally flips them from the 0-team to the 1-team branch, which
+ * redirects — no manual navigation or full-page reload required (the old
+ * teamless-path code used `window.location.href` specifically to force a
+ * fresh read of the user's team; that's no longer needed since this page
+ * doesn't read from the stale cache in the first place).
  */
 export default function Teams() {
   const { user } = useAuth()
+  const [teams, setTeams] = useState<Team[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  if (user && user.role !== 'super_admin' && user.team_id) {
-    return <Navigate to={`/teams/${user.team_id}`} replace />
+  function load() {
+    api
+      .listTeams()
+      .then(setTeams)
+      .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load teams'))
   }
 
-  if (user && user.role !== 'super_admin' && !user.team_id) {
-    return <TeamlessPrompt />
+  useEffect(load, [])
+
+  if (error) {
+    return (
+      <div>
+        <h1 className="font-display mb-6 text-2xl font-semibold tracking-tight text-white">Teams</h1>
+        <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+          {error}
+        </div>
+      </div>
+    )
   }
 
-  return <AllTeamsGrid />
+  if (!teams) {
+    return <p className="text-sm text-gray-500">Loading teams…</p>
+  }
+
+  const isSuper = isSuperAdmin(user)
+
+  if (!isSuper && teams.length === 0) {
+    return <TeamlessPrompt onCreated={load} />
+  }
+
+  if (!isSuper && teams.length === 1) {
+    return <Navigate to={`/teams/${teams[0].id}`} replace />
+  }
+
+  return <TeamsGrid teams={teams} isSuper={isSuper} onCreated={load} />
 }
 
-function TeamlessPrompt() {
+function TeamlessPrompt({ onCreated }: { onCreated: () => void }) {
   const [showCreate, setShowCreate] = useState(false)
   return (
     <div>
@@ -44,29 +95,39 @@ function TeamlessPrompt() {
           meant to join one that already exists.
         </p>
       </div>
-      {showCreate && <CreateTeamModal onClose={() => setShowCreate(false)} />}
+      {showCreate && (
+        <CreateTeamModal
+          onClose={() => setShowCreate(false)}
+          onCreated={() => {
+            setShowCreate(false)
+            onCreated()
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function AllTeamsGrid() {
-  const [teams, setTeams] = useState<Team[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+function TeamsGrid({
+  teams,
+  isSuper,
+  onCreated,
+}: {
+  teams: Team[]
+  isSuper: boolean
+  onCreated: () => void
+}) {
   const [showCreate, setShowCreate] = useState(false)
-
-  function load() {
-    api
-      .listTeams()
-      .then(setTeams)
-      .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load teams'))
-  }
-
-  useEffect(load, [])
 
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-white">Teams</h1>
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-white">Teams</h1>
+          <p className="text-sm text-gray-500">
+            {isSuper ? 'Every team on the platform' : 'Teams you belong to'}
+          </p>
+        </div>
         <button
           onClick={() => setShowCreate(true)}
           className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
@@ -75,39 +136,25 @@ function AllTeamsGrid() {
         </button>
       </div>
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
-          {error}
-        </div>
-      )}
-
-      {teams && teams.length === 0 && (
-        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center text-gray-400">
-          No teams yet.
-        </div>
-      )}
-
-      {teams && teams.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {teams.map((t) => (
-            <Link
-              key={t.id}
-              to={`/teams/${t.id}`}
-              className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
-            >
-              <div className="font-mono text-base font-semibold text-white">{t.name}</div>
-              <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
-            </Link>
-          ))}
-        </div>
-      )}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {teams.map((t) => (
+          <Link
+            key={t.id}
+            to={`/teams/${t.id}`}
+            className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
+          >
+            <div className="font-mono text-base font-semibold text-white">{t.name}</div>
+            <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
+          </Link>
+        ))}
+      </div>
 
       {showCreate && (
         <CreateTeamModal
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false)
-            load()
+            onCreated()
           }}
         />
       )}
@@ -115,7 +162,7 @@ function AllTeamsGrid() {
   )
 }
 
-function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [busy, setBusy] = useState(false)
@@ -126,15 +173,12 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
     setBusy(true)
     setError(null)
     try {
-      const team = await api.createTeam({ name, slug })
-      if (onCreated) {
-        onCreated()
-      } else {
-        // Teamless-user path: no list to refresh, just go straight to the
-        // new team's detail page. A full reload picks up the user's
-        // updated role/team_id from a fresh /auth/me on next navigation.
-        window.location.href = `/teams/${team.id}`
-      }
+      await api.createTeam({ name, slug })
+      // No manual navigation here — the parent's onCreated() re-fetches
+      // listTeams(), and Teams()'s own branching logic (see module
+      // docstring) naturally redirects if this was the user's first team,
+      // or the grid just picks up the new team in place otherwise.
+      onCreated()
     } catch (err) {
       setError(err instanceof APIError ? err.message : 'Failed to create team')
       setBusy(false)

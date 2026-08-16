@@ -44,8 +44,22 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-gray-400">
-              <span className="text-gray-200 font-mono">{user?.username}</span>{' '}
-              <span className="text-gray-600">({user?.role})</span>
+              <span className="text-gray-200 font-mono">{user?.username}</span>
+              {/*
+                MULTI-TEAM CHANGE: this used to show `(${user.role})`, a
+                single flat value. That role is now team-scoped and a user
+                can hold a different one on each of several teams, so
+                there's no single value left to show here — the previous
+                display would have been misleading ("(member)" while
+                actually being team_admin elsewhere). platform_role is
+                still a single global fact, so it's the one thing still
+                worth surfacing in a persistent header — and only when it's
+                the notable case (super_admin). Team-scoped role belongs on
+                that team's own page (see TeamDetail.tsx), not here.
+              */}
+              {user?.platform_role === 'super_admin' && (
+                <span className="ml-1.5 text-gray-600">(super_admin)</span>
+              )}
             </span>
             <button onClick={logout} className="text-gray-500 hover:text-gray-300 underline text-xs">
               Log out

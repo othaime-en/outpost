@@ -113,7 +113,8 @@ export default function EnvironmentFilterBar({
         ))}
       </div>
 
-      {/* Team dropdown — super_admin only */}
+      {/* Team dropdown — shown for super_admin or anyone on 2+ teams (see
+          Dashboard.tsx's showTeamFilter for the multi-team migration note) */}
       {showTeamFilter && (
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-gray-500">Team</span>
