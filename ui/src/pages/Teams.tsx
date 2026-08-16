@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Navigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { isSuperAdmin } from '../lib/permissions'
 import { api, APIError, type Team } from '../api/client'
@@ -16,24 +16,27 @@ import Modal from '../components/Modal'
  * correctly scoped server-side: a caller's own teams, or everything for
  * super_admin) and branches on how many teams came back:
  *
- *   - super_admin                    -> grid of every team on the platform
- *   - non-super_admin, 0 teams       -> self-serve "create your first team"
- *   - non-super_admin, exactly 1     -> redirect straight there (same UX
- *                                        as the old single-team model — no
- *                                        regression for the common case)
- *   - non-super_admin, 2+ teams      -> grid of just THEIR teams (this is
- *                                        the new capability: previously
- *                                        impossible to even reach, since a
- *                                        user could only ever be on one)
+ *   - non-super_admin, 0 teams  -> self-serve "create your first team"
+ *   - everyone else (super_admin, or non-super_admin with 1+ teams)
+ *                               -> grid
+ *
+ * EDIT after initial ship: this originally auto-redirected a non-super_admin
+ * with EXACTLY one team straight to that team's detail page, to preserve
+ * the old single-team model's "just take me there" UX. That turned out to
+ * be a real usability bug, not a nicety: it made the Teams landing page
+ * itself unreachable for the single-team case — clicking "Teams" in the
+ * nav, or "← Back to Teams" from a team detail page, just bounced straight
+ * back to the same team with no way to see a create-team button or land on
+ * a stable "my teams" page at all. Since the grid renders perfectly well
+ * with a single card in it, the fix is simply not to special-case that
+ * count — 1+ teams always gets the grid, only 0 teams gets the prompt.
  *
  * Because this reads fresh from the API on every mount rather than from
  * AuthContext's cached user object, there's no staleness problem when a
  * user self-serve-creates their first team here: refreshing the list after
- * creation naturally flips them from the 0-team to the 1-team branch, which
- * redirects — no manual navigation or full-page reload required (the old
- * teamless-path code used `window.location.href` specifically to force a
- * fresh read of the user's team; that's no longer needed since this page
- * doesn't read from the stale cache in the first place).
+ * creation naturally moves them from the 0-team prompt to the grid (now
+ * showing their new team) with no manual navigation or full-page reload
+ * required.
  */
 export default function Teams() {
   const { user } = useAuth()
@@ -68,10 +71,6 @@ export default function Teams() {
 
   if (!isSuper && teams.length === 0) {
     return <TeamlessPrompt onCreated={load} />
-  }
-
-  if (!isSuper && teams.length === 1) {
-    return <Navigate to={`/teams/${teams[0].id}`} replace />
   }
 
   return <TeamsGrid teams={teams} isSuper={isSuper} onCreated={load} />
