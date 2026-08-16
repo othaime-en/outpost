@@ -40,10 +40,8 @@ thing, checked one way, everywhere.
 from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, Path, status
-from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.middleware.auth import get_current_user
