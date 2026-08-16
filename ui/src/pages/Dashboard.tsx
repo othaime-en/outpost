@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useEnvironments } from '../hooks/useEnvironments'
 import { useAuth } from '../hooks/useAuth'
 import { useEnvironmentActions } from '../hooks/useEnvironmentActions'
+import { isSuperAdmin } from '../lib/permissions'
 import { api, type EnvironmentFilters, type Team } from '../api/client'
 import EnvironmentCard from '../components/EnvironmentCard'
 import EnvironmentFilterBar from '../components/EnvironmentFilterBar'
@@ -13,15 +14,19 @@ export default function Dashboard() {
   const { environments, loading, error, refresh } = useEnvironments(filters)
   const [teams, setTeams] = useState<Team[]>([])
   const actions = useEnvironmentActions(refresh)
+  const isSuper = isSuperAdmin(user)
 
-  // The team filter dropdown only matters for super_admin (everyone else is
-  // already scoped to their own team server-side), so only super_admin pays
-  // for the extra request.
   useEffect(() => {
-    if (user?.role === 'super_admin') {
-      api.listTeams().then(setTeams).catch(() => setTeams([]))
-    }
-  }, [user?.role])
+    api.listTeams().then(setTeams).catch(() => setTeams([]))
+  }, [])
+
+  const subtitle = isSuper
+    ? 'All teams'
+    : teams.length === 0
+      ? 'No teams yet'
+      : teams.length === 1
+        ? 'Your team'
+        : `${teams.length} teams`
 
   return (
     <div>
@@ -30,9 +35,7 @@ export default function Dashboard() {
           <h1 className="font-display text-2xl font-semibold tracking-tight text-white">
             Environments
           </h1>
-          <p className="text-sm text-gray-500">
-            {user?.role === 'super_admin' ? 'All teams' : 'Your team'}
-          </p>
+          <p className="text-sm text-gray-500">{subtitle}</p>
         </div>
         <Link
           to="/new"
@@ -46,7 +49,7 @@ export default function Dashboard() {
         filters={filters}
         onChange={setFilters}
         teams={teams}
-        showTeamFilter={user?.role === 'super_admin'}
+        showTeamFilter={isSuper || teams.length > 1}
       />
 
       {loading && <p className="text-sm text-gray-500">Loading environments…</p>}

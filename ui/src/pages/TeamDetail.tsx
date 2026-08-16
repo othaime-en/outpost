@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { api, APIError, type Role, type TeamDetail as TeamDetailData, type User } from '../api/client'
+import { isSuperAdmin } from '../lib/permissions'
+import { api, APIError, type TeamRole, type TeamDetail as TeamDetailData, type TeamMember } from '../api/client'
 import StatusBadge from '../components/StatusBadge'
 import HealthIndicator from '../components/HealthIndicator'
 import CostBadge from '../components/CostBadge'
@@ -9,7 +10,11 @@ import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
 import { formatRelativeTime, shortId } from '../lib/format'
 
-const ROLES: Role[] = ['member', 'team_admin', 'super_admin']
+// MULTI-TEAM CHANGE: 'super_admin' is no longer a valid team-scoped role at
+// all — TeamMembership.role is DB-constrained to member|team_admin on the
+// backend, and AddMemberRequest/UpdateMemberRoleRequest reject anything
+// else at the schema layer (422).
+const TEAM_ROLES: TeamRole[] = ['member', 'team_admin']
 
 export default function TeamDetail() {
   const { id } = useParams<{ id: string }>()
@@ -18,7 +23,7 @@ export default function TeamDetail() {
   const [team, setTeam] = useState<TeamDetailData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
-  const [removeTarget, setRemoveTarget] = useState<User | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<TeamMember | null>(null)
   const [showDeleteTeam, setShowDeleteTeam] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -46,7 +51,9 @@ export default function TeamDetail() {
     return <p className="text-sm text-gray-500">Loading team…</p>
   }
 
-  const canManageMembers = user?.role === 'super_admin' || (user?.role === 'team_admin' && user.team_id === team.id)
+
+  const myMembership = team.members.find((m) => m.id === user?.id)
+  const canManageMembers = isSuperAdmin(user) || myMembership?.team_role === 'team_admin'
   const canDeleteTeam = canManageMembers // same scoping: team_admin (own team) / super_admin (any)
   const blockingEnvironments = team.environments.filter((e) => e.status !== 'DESTROYED')
 
@@ -75,6 +82,8 @@ export default function TeamDetail() {
       })
       setRemoveTarget(null)
       if (removeTarget.id === user?.id) {
+        // Leaving this team — Teams.tsx re-fetches listTeams() fresh on its
+        // own mount, so no AuthContext refresh is needed here either.
         navigate('/teams')
       } else {
         load()
@@ -134,7 +143,7 @@ export default function TeamDetail() {
               {team.members.map((m) => {
                 const isSelf = m.id === user?.id
                 const canRemoveThis = isSelf || canManageMembers
-                const canPromoteThis = canManageMembers && m.role === 'member'
+                const canPromoteThis = canManageMembers && m.team_role === 'member'
                 return (
                   <tr key={m.id} className="border-b border-gray-800 last:border-0">
                     <td className="py-2 font-mono text-gray-200">
@@ -142,7 +151,7 @@ export default function TeamDetail() {
                       {isSelf && <span className="ml-2 text-xs text-gray-600">(you)</span>}
                     </td>
                     <td className="py-2 text-gray-500">{m.email ?? '—'}</td>
-                    <td className="py-2 text-right text-xs text-gray-500 uppercase">{m.role}</td>
+                    <td className="py-2 text-right text-xs text-gray-500 uppercase">{m.team_role}</td>
                     <td className="py-2 pl-4 text-right">
                       <div className="flex justify-end gap-2">
                         {canPromoteThis && (
@@ -218,7 +227,7 @@ export default function TeamDetail() {
             {removeTarget.id === user?.id
               ? "You'll lose access to this team's environments and members list. You can be re-added later."
               : `@${removeTarget.username} will lose access to this team's environments and members list.`}
-            {removeTarget.role === 'team_admin' && (
+            {removeTarget.team_role === 'team_admin' && (
               <span className="mt-2 block text-amber-400">
                 If this is the team's last team_admin, removal will be blocked — promote another
                 member first.
@@ -318,13 +327,10 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function AddMemberForm({ teamId, onAdded }: { teamId: string; onAdded: () => void }) {
-  const { user } = useAuth()
   const [username, setUsername] = useState('')
-  const [role, setRole] = useState<Role>('member')
+  const [role, setRole] = useState<TeamRole>('member')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const assignableRoles = user?.role === 'super_admin' ? ROLES : ROLES.filter((r) => r !== 'super_admin')
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -359,10 +365,10 @@ function AddMemberForm({ teamId, onAdded }: { teamId: string; onAdded: () => voi
         <label className="mb-1 block text-xs text-gray-500">Role</label>
         <select
           value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
+          onChange={(e) => setRole(e.target.value as TeamRole)}
           className="rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-cyan-600 focus:outline-none"
         >
-          {assignableRoles.map((r) => (
+          {TEAM_ROLES.map((r) => (
             <option key={r} value={r}>
               {r}
             </option>

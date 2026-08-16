@@ -1,6 +1,13 @@
 """
 Pydantic schemas for environment endpoints.
 
+CreateEnvironmentRequest.team_id is new: under the old single-team model,
+which team an environment belonged to was implicit (current_user.team_id).
+Now that a user can belong to more than one team, the caller must say which
+one. The router validates this against the caller's actual memberships via
+has_team_role() — passing an arbitrary team_id is rejected with 403, not
+silently accepted.
+
 CallbackRequest.status is deliberately restricted to the three values
 GitHub Actions can ever POST back (RUNNING / DESTROYED / FAILED) — PENDING,
 PROVISIONING, and DESTROYING are states the API itself sets before or while
@@ -21,6 +28,8 @@ VALID_CALLBACK_STATUSES = {"RUNNING", "DESTROYED", "FAILED"}
 
 class CreateEnvironmentRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
+    team_id: str = Field(..., description="Team this environment belongs to. Must be one of "
+                          "the caller's own team memberships (or any team, for a super_admin).")
     env_type: str
     ttl_hours: int = Field(default=24, ge=1, le=168)
     aws_region: str = Field(default="us-east-1")

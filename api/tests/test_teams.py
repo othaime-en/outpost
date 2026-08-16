@@ -1,23 +1,30 @@
 """
 Teams Integration Tests
-
-Covers the RBAC rewrite documented in routers/teams.py's module docstring:
-role-scoped GET /teams and GET /teams/{id}, self-serve POST /teams (with the
-"already on a team" 400 edge case), and read-only member visibility on
-GET /teams/{id}/members.
 """
 
 from __future__ import annotations
 
 import uuid
-
+from typing import Optional
 
 from app.models.team import Team
+from app.models.team_membership import TeamMembership
 from app.models.user import User
 
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _membership_role(db_session, user_id, team_id) -> Optional[str]:
+    """Reads a user's team-scoped role directly from team_memberships —
+    the replacement for the old `user.role` attribute check."""
+    m = (
+        db_session.query(TeamMembership)
+        .filter(TeamMembership.user_id == user_id, TeamMembership.team_id == team_id)
+        .first()
+    )
+    return m.role if m else None
 
 
 # --- POST /teams — self-serve creation -------------------------------------
@@ -34,7 +41,7 @@ def test_teamless_member_can_self_serve_create_team(client, member_without_team_
     db_session.track_team(Team(id=uuid.UUID(team_id)))  # register for teardown
 
 
-def test_self_serve_creation_promotes_creator_to_team_admin(
+def test_self_serve_creation_enrolls_creator_as_team_admin(
     client, member_without_team_user, member_without_team_token, db_session
 ):
     resp = client.post(
@@ -46,21 +53,27 @@ def test_self_serve_creation_promotes_creator_to_team_admin(
     team_id = resp.json()["id"]
     db_session.track_team(Team(id=uuid.UUID(team_id)))
 
-    db_session.refresh(member_without_team_user)
-    assert member_without_team_user.role == "team_admin"
-    assert str(member_without_team_user.team_id) == team_id
+    assert _membership_role(db_session, member_without_team_user.id, team_id) == "team_admin"
 
 
-def test_user_already_on_a_team_cannot_self_serve_create(client, member_token):
+def test_user_already_on_a_team_can_self_serve_create_second_team(
+    client, member_token, member_user, test_team, db_session
+):
     resp = client.post(
         "/teams/",
         json={"name": f"Another Team {uuid.uuid4().hex[:6]}", "slug": f"another-team-{uuid.uuid4().hex[:6]}"},
         headers=_auth(member_token),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 201
+    new_team_id = resp.json()["id"]
+    db_session.track_team(Team(id=uuid.UUID(new_team_id)))
+
+    assert _membership_role(db_session, member_user.id, new_team_id) == "team_admin"
+    # Original membership on test_team is untouched.
+    assert _membership_role(db_session, member_user.id, test_team.id) == "member"
 
 
-def test_super_admin_creating_team_keeps_super_admin_role(
+def test_super_admin_creating_team_keeps_super_admin_platform_role(
     client, super_admin_user, super_admin_token, db_session
 ):
     resp = client.post(
@@ -73,7 +86,11 @@ def test_super_admin_creating_team_keeps_super_admin_role(
     db_session.track_team(Team(id=uuid.UUID(team_id)))
 
     db_session.refresh(super_admin_user)
-    assert super_admin_user.role == "super_admin"
+    assert super_admin_user.platform_role == "super_admin"
+    # A super_admin creating a team is ALSO
+    # auto-enrolled as team_admin of it, same as any other creator — the
+    # membership is purely team-scoped and doesn't touch platform_role.
+    assert _membership_role(db_session, super_admin_user.id, team_id) == "team_admin"
 
 
 def test_duplicate_team_name_or_slug_is_rejected(client, member_without_team_token, test_team):
@@ -109,6 +126,15 @@ def test_super_admin_lists_all_teams(client, super_admin_token, test_team):
     assert str(test_team.id) in ids
 
 
+def test_user_on_two_teams_lists_both(client, user_on_two_teams_token, test_team, second_team):
+    """The core new scenario multi-team membership exists for: one user,
+    two teams, both visible in a single call — not just one."""
+    resp = client.get("/teams/", headers=_auth(user_on_two_teams_token))
+    assert resp.status_code == 200
+    ids = {t["id"] for t in resp.json()}
+    assert {str(test_team.id), str(second_team.id)} <= ids
+
+
 # --- GET /teams/{id} — detail endpoint --------------------------------------
 
 
@@ -139,6 +165,15 @@ def test_super_admin_can_view_any_team_detail(client, super_admin_token, test_te
     assert resp.status_code == 200
 
 
+def test_user_on_two_teams_can_view_both_details(
+    client, user_on_two_teams_token, test_team, second_team
+):
+    resp_a = client.get(f"/teams/{test_team.id}", headers=_auth(user_on_two_teams_token))
+    resp_b = client.get(f"/teams/{second_team.id}", headers=_auth(user_on_two_teams_token))
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+
+
 def test_team_detail_includes_environments(client, member_token, test_team, member_user, make_environment):
     env = make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
     resp = client.get(f"/teams/{test_team.id}", headers=_auth(member_token))
@@ -152,7 +187,7 @@ def test_team_detail_404_for_unknown_team(client, member_token):
     assert resp.status_code == 404
 
 
-# --- GET /teams/{id}/members — now read-only for plain members -------------
+# --- GET /teams/{id}/members — read-only for plain members -----------------
 
 
 def test_plain_member_can_list_own_team_members(client, member_token, test_team, member_user):
@@ -173,7 +208,22 @@ def test_member_cannot_list_other_teams_members(client, member_token, db_session
     assert resp.status_code == 403
 
 
-# --- POST /teams/{id}/members — unchanged, still team_admin+ ---------------
+def test_member_roster_reports_this_teams_role_not_platform_role(
+    client, user_on_two_teams, user_on_two_teams_token, test_team, second_team
+):
+    """user_on_two_teams is 'member' on test_team and 'team_admin' on
+    second_team — the roster for EACH team must show the role scoped to
+    THAT team, not a single value copy-pasted across both."""
+    resp_a = client.get(f"/teams/{test_team.id}/members", headers=_auth(user_on_two_teams_token))
+    resp_b = client.get(f"/teams/{second_team.id}/members", headers=_auth(user_on_two_teams_token))
+
+    role_on_a = next(m["team_role"] for m in resp_a.json() if m["id"] == str(user_on_two_teams.id))
+    role_on_b = next(m["team_role"] for m in resp_b.json() if m["id"] == str(user_on_two_teams.id))
+    assert role_on_a == "member"
+    assert role_on_b == "team_admin"
+
+
+# --- POST /teams/{id}/members -----------------------------------------------
 
 
 def test_plain_member_cannot_add_team_member(client, member_token, test_team):
@@ -190,8 +240,7 @@ def test_team_admin_can_add_member_to_own_team(client, team_admin_token, test_te
         github_id=uuid.uuid4().int % (2**62),
         username=f"invitee-{uuid.uuid4().hex[:8]}",
         email=None,
-        role="member",
-        team_id=None,
+        platform_role="user",
     )
     db_session.add(new_user)
     db_session.commit()
@@ -204,31 +253,110 @@ def test_team_admin_can_add_member_to_own_team(client, team_admin_token, test_te
         headers=_auth(team_admin_token),
     )
     assert resp.status_code == 200
-    assert resp.json()["team_id"] == str(test_team.id)
+    assert resp.json()["team_role"] == "member"
+    assert _membership_role(db_session, new_user.id, test_team.id) == "member"
+
+
+def test_adding_the_same_member_twice_is_rejected(client, team_admin_token, test_team, member_user):
+    """member_user is already on test_team (via the fixture) — re-adding
+    them must 409, not silently overwrite the existing membership row."""
+    resp = client.post(
+        f"/teams/{test_team.id}/members",
+        json={"github_username": member_user.username, "role": "team_admin"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 409
+
+
+def test_team_admin_can_add_an_existing_super_admin_as_plain_member(
+    client, team_admin_token, test_team, super_admin_user, db_session
+):
+    """
+    This is the actual bug-fix regression test, positive direction: this
+    operation used to be blocked with 403 to avoid corrupting the
+    super_admin's (formerly shared) role column. Now that TeamMembership.role
+    is structurally separate from User.platform_role, there's nothing to
+    corrupt, and this is just an ordinary add.
+    """
+    resp = client.post(
+        f"/teams/{test_team.id}/members",
+        json={"github_username": super_admin_user.username, "role": "member"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["team_role"] == "member"
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.platform_role == "super_admin"  # untouched
+    assert _membership_role(db_session, super_admin_user.id, test_team.id) == "member"
+
+
+def test_add_member_with_role_super_admin_is_rejected_at_schema_layer(
+    client, team_admin_token, test_team
+):
+    """
+    TEAM_ROLES = {"member", "team_admin"} — "super_admin" isn't a valid
+    team-scoped role at all anymore, so this is a 422 from Pydantic
+    validation, not a 403 application-level permission check. The handler
+    body never even runs.
+    """
+    resp = client.post(
+        f"/teams/{test_team.id}/members",
+        json={"github_username": "octocat", "role": "super_admin"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 422
 
 
 # --- PATCH /teams/{id}/members/{user_id}/role — promote/demote existing member ---
 
 
-def test_team_admin_can_promote_member_to_team_admin(
-    client, team_admin_token, test_team, member_user
-):
+def test_team_admin_can_promote_member_to_team_admin(client, team_admin_token, test_team, member_user, db_session):
     resp = client.patch(
         f"/teams/{test_team.id}/members/{member_user.id}/role",
         json={"role": "team_admin"},
         headers=_auth(team_admin_token),
     )
     assert resp.status_code == 200
-    assert resp.json()["role"] == "team_admin"
+    assert resp.json()["team_role"] == "team_admin"
+    assert _membership_role(db_session, member_user.id, test_team.id) == "team_admin"
 
 
-def test_team_admin_cannot_grant_super_admin(client, team_admin_token, test_team, member_user):
+def test_update_member_role_with_super_admin_is_rejected_at_schema_layer(
+    client, team_admin_token, test_team, member_user
+):
+    """Same reasoning as add_member above: 422, not 403 — "super_admin" is
+    not a member of TEAM_ROLES, so Pydantic rejects it before the handler runs."""
     resp = client.patch(
         f"/teams/{test_team.id}/members/{member_user.id}/role",
         json={"role": "super_admin"},
         headers=_auth(team_admin_token),
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 422
+
+
+def test_update_member_role_on_an_existing_super_admin_succeeds_and_leaves_platform_role_alone(
+    client, team_admin_token, test_team, super_admin_user, make_membership, db_session
+):
+    """
+    The other half of the bug-fix regression test: a super_admin who
+    already holds a team membership can have THAT membership's role
+    changed freely — platform_role is a separate column and is never
+    touched by this endpoint.
+    """
+    make_membership(user_id=super_admin_user.id, team_id=test_team.id, role="member")
+
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{super_admin_user.id}/role",
+        json={"role": "team_admin"},
+        headers=_auth(team_admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["team_role"] == "team_admin"
+
+    db_session.refresh(super_admin_user)
+    assert super_admin_user.platform_role == "super_admin"  # untouched
+    assert _membership_role(db_session, super_admin_user.id, test_team.id) == "team_admin"
 
 
 def test_cannot_demote_the_last_team_admin(client, team_admin_token, test_team, team_admin_user):
@@ -243,9 +371,15 @@ def test_cannot_demote_the_last_team_admin(client, team_admin_token, test_team, 
 def test_demoting_non_last_team_admin_succeeds(
     client, team_admin_token, test_team, team_admin_user, member_user, db_session
 ):
-    # Promote member_user to team_admin first, so team_admin_user is no
-    # longer the *last* one and can safely be demoted.
-    member_user.role = "team_admin"
+    # Promote member_user to team_admin first (directly, at the DB layer,
+    # for setup convenience), so team_admin_user is no longer the *last*
+    # one and can safely be demoted.
+    membership = (
+        db_session.query(TeamMembership)
+        .filter(TeamMembership.user_id == member_user.id, TeamMembership.team_id == test_team.id)
+        .first()
+    )
+    membership.role = "team_admin"
     db_session.commit()
 
     resp = client.patch(
@@ -254,7 +388,7 @@ def test_demoting_non_last_team_admin_succeeds(
         headers=_auth(team_admin_token),
     )
     assert resp.status_code == 200
-    assert resp.json()["role"] == "member"
+    assert resp.json()["team_role"] == "member"
 
 
 def test_plain_member_cannot_change_roles(client, member_token, test_team, member_user):
@@ -266,15 +400,31 @@ def test_plain_member_cannot_change_roles(client, member_token, test_team, membe
     assert resp.status_code == 403
 
 
+def test_team_admin_on_team_a_cannot_change_roles_on_team_b(
+    client, user_on_two_teams, user_on_two_teams_token, test_team, second_team, member_user
+):
+    """
+    user_on_two_teams is team_admin on second_team but only a plain member
+    on test_team — their team_admin status on ONE team must not leak into
+    authority over a DIFFERENT team. This is the exact scoping bug that
+    would have been impossible to even express under the old single-team
+    model (there was only ever one team to be admin of).
+    """
+    resp = client.patch(
+        f"/teams/{test_team.id}/members/{member_user.id}/role",
+        json={"role": "team_admin"},
+        headers=_auth(user_on_two_teams_token),
+    )
+    assert resp.status_code == 403
+
+
 # --- DELETE /teams/{id}/members/{user_id} — self-serve or forced removal ---
 
 
 def test_member_can_remove_self(client, member_token, member_user, test_team, db_session):
     resp = client.delete(f"/teams/{test_team.id}/members/{member_user.id}", headers=_auth(member_token))
     assert resp.status_code == 200
-    db_session.refresh(member_user)
-    assert member_user.team_id is None
-    assert member_user.role == "member"
+    assert _membership_role(db_session, member_user.id, test_team.id) is None
 
 
 def test_team_admin_can_forcibly_remove_another_member(
@@ -282,36 +432,45 @@ def test_team_admin_can_forcibly_remove_another_member(
 ):
     resp = client.delete(f"/teams/{test_team.id}/members/{member_user.id}", headers=_auth(team_admin_token))
     assert resp.status_code == 200
-    db_session.refresh(member_user)
-    assert member_user.team_id is None
+    assert _membership_role(db_session, member_user.id, test_team.id) is None
+
+
+def test_removing_from_one_team_does_not_affect_other_memberships(
+    client, user_on_two_teams, test_team, second_team, team_admin_token, db_session
+):
+    """Removing user_on_two_teams from test_team must leave their
+    second_team membership completely untouched — the whole point of
+    per-team rows instead of a single team_id."""
+    resp = client.delete(f"/teams/{test_team.id}/members/{user_on_two_teams.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 200
+    assert _membership_role(db_session, user_on_two_teams.id, test_team.id) is None
+    assert _membership_role(db_session, user_on_two_teams.id, second_team.id) == "team_admin"
 
 
 def test_member_cannot_remove_someone_else(client, member_token, team_admin_user, test_team):
-    resp = client.delete(
-        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(member_token)
-    )
+    resp = client.delete(f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(member_token))
     assert resp.status_code == 403
 
 
 def test_cannot_remove_the_last_team_admin(client, team_admin_token, team_admin_user, test_team):
-    resp = client.delete(
-        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token)
-    )
+    resp = client.delete(f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token))
     assert resp.status_code == 400
 
 
 def test_last_team_admin_can_leave_after_promoting_a_peer(
     client, team_admin_token, team_admin_user, member_user, test_team, db_session
 ):
-    member_user.role = "team_admin"
+    membership = (
+        db_session.query(TeamMembership)
+        .filter(TeamMembership.user_id == member_user.id, TeamMembership.team_id == test_team.id)
+        .first()
+    )
+    membership.role = "team_admin"
     db_session.commit()
 
-    resp = client.delete(
-        f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token)
-    )
+    resp = client.delete(f"/teams/{test_team.id}/members/{team_admin_user.id}", headers=_auth(team_admin_token))
     assert resp.status_code == 200
-    db_session.refresh(team_admin_user)
-    assert team_admin_user.team_id is None
+    assert _membership_role(db_session, team_admin_user.id, test_team.id) is None
 
 
 # --- DELETE /teams/{id} — blocked on non-destroyed environments, auto-detaches members ---
@@ -347,25 +506,13 @@ def test_delete_team_succeeds_when_all_environments_destroyed(
     assert member_user.username in body["detached_members"]
     assert team_admin_user.username in body["detached_members"]
 
-    db_session.refresh(member_user)
-    db_session.refresh(team_admin_user)
-    assert member_user.team_id is None
-    assert team_admin_user.team_id is None
+    assert _membership_role(db_session, member_user.id, test_team.id) is None
+    assert _membership_role(db_session, team_admin_user.id, test_team.id) is None
 
     # Team row persists (soft delete — see the Team model's docstring for
     # why a hard delete isn't possible once a team has any environment
     # history), but is marked deleted and excluded from normal lookups.
-    #
-    # The delete happened through `client`, which runs the request against
-    # its own separate SessionLocal() (via the app's get_db dependency) —
-    # not the `db_session` used here for setup/teardown. `db_session`'s
-    # identity map still holds the Python object it originally created
-    # test_team from, and a plain query for that same primary key returns
-    # that cached instance's attributes as-is rather than re-reading them
-    # from Postgres. db_session.refresh() forces it to re-fetch this row.
-    from app.models.team import Team as TeamModel
-
-    deleted_team = db_session.query(TeamModel).filter(TeamModel.id == test_team.id).first()
+    deleted_team = db_session.query(Team).filter(Team.id == test_team.id).first()
     db_session.refresh(deleted_team)
     assert deleted_team is not None
     assert deleted_team.deleted_at is not None
@@ -374,9 +521,18 @@ def test_delete_team_succeeds_when_all_environments_destroyed(
     assert get_resp.status_code == 404
 
 
-def test_delete_team_succeeds_with_no_environments_at_all(
-    client, team_admin_token, test_team
+def test_delete_team_does_not_affect_a_detached_members_other_teams(
+    client, user_on_two_teams, test_team, second_team, team_admin_token, db_session
 ):
+    """Deleting test_team must detach user_on_two_teams from test_team
+    ONLY — their second_team membership must survive the delete."""
+    resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp.status_code == 200
+    assert _membership_role(db_session, user_on_two_teams.id, test_team.id) is None
+    assert _membership_role(db_session, user_on_two_teams.id, second_team.id) == "team_admin"
+
+
+def test_delete_team_succeeds_with_no_environments_at_all(client, team_admin_token, test_team):
     resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
     assert resp.status_code == 200
 
@@ -400,45 +556,3 @@ def test_super_admin_can_delete_any_team(client, super_admin_token, test_team):
 def test_plain_member_cannot_delete_team(client, member_token, test_team):
     resp = client.delete(f"/teams/{test_team.id}", headers=_auth(member_token))
     assert resp.status_code == 403
-
-
-# --- Hotfix: team-scoped role writes must never touch a super_admin -------
-# Regression coverage for a real bug: adding an existing super_admin to a
-# team (or editing their team role afterward) silently overwrote their
-# platform-wide role, permanently downgrading them. Both endpoints must
-# refuse outright rather than merely "protect" the value.
-
-
-def test_add_member_cannot_downgrade_a_super_admin(
-    client, team_admin_token, test_team, super_admin_user, db_session
-):
-    resp = client.post(
-        f"/teams/{test_team.id}/members",
-        json={"github_username": super_admin_user.username, "role": "member"},
-        headers=_auth(team_admin_token),
-    )
-    assert resp.status_code == 403
-
-    db_session.refresh(super_admin_user)
-    assert super_admin_user.role == "super_admin"
-    assert super_admin_user.team_id is None
-
-
-def test_update_member_role_cannot_downgrade_a_super_admin(
-    client, team_admin_token, test_team, super_admin_user, db_session
-):
-    # Simulate a super_admin who already has a team_id set (e.g. from
-    # before this hotfix, or added directly in the DB) to confirm the
-    # endpoint itself still refuses to touch their role.
-    super_admin_user.team_id = test_team.id
-    db_session.commit()
-
-    resp = client.patch(
-        f"/teams/{test_team.id}/members/{super_admin_user.id}/role",
-        json={"role": "member"},
-        headers=_auth(team_admin_token),
-    )
-    assert resp.status_code == 403
-
-    db_session.refresh(super_admin_user)
-    assert super_admin_user.role == "super_admin"

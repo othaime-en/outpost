@@ -9,12 +9,12 @@
  * localStorage. It lives only in this module's private field plus
  * AuthContext's React state, both of which are wiped on a full page reload.
  * That's intentional (see hooks/useAuth.tsx).
- *
  */
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
-export type Role = 'member' | 'team_admin' | 'super_admin'
+export type PlatformRole = 'user' | 'super_admin'
+export type TeamRole = 'member' | 'team_admin'
 export type EnvType = 'dev' | 'staging'
 export type EnvStatus =
   | 'PENDING'
@@ -25,12 +25,33 @@ export type EnvStatus =
   | 'FAILED'
 export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNKNOWN'
 
+/** One row of a user's membership list — this user's role on ONE team. */
+export interface TeamMembershipSummary {
+  team_id: string
+  team_name: string
+  team_slug: string
+  role: TeamRole
+}
+
 export interface User {
   id: string
   username: string
   email: string | null
-  role: Role
-  team_id: string | null
+  platform_role: PlatformRole
+  team_memberships: TeamMembershipSummary[]
+}
+
+/**
+ * A user in the context of ONE specific team's roster (returned by
+ * listTeamMembers/addTeamMember/updateMemberRole/removeTeamMember).
+ * `team_role` is that team's role — not platform-wide, and this user may
+ * hold other memberships elsewhere that this shape doesn't speak to.
+ */
+export interface TeamMember {
+  id: string
+  username: string
+  email: string | null
+  team_role: TeamRole
 }
 
 export interface ApiKeyResponse {
@@ -60,6 +81,7 @@ export interface Environment {
 
 export interface CreateEnvironmentBody {
   name: string
+  team_id: string
   env_type: EnvType
   ttl_hours: number
   aws_region?: string
@@ -124,7 +146,7 @@ export interface Team {
 
 export interface TeamDetail extends Team {
   created_at: string
-  members: User[]
+  members: TeamMember[]
   environments: Environment[]
   active_environment_count: number
   estimated_monthly_cost_usd: number
@@ -137,7 +159,7 @@ export interface CreateTeamBody {
 
 export interface AddMemberBody {
   github_username: string
-  role: Role
+  role: TeamRole
 }
 
 export interface TeamDeleteResult {
@@ -149,10 +171,17 @@ export interface TeamDeleteResult {
  * Server-side filters for GET /environments. All optional — an empty object
  * is the same as calling listEnvironments() with no filters, which excludes
  * DESTROYED by default (see the API's own docstring on this behavior).
+ *
+ * `teamId` narrows to one specific team. This now works for ANY caller, not
+ * just super_admin — the API validates it's one of the caller's own team
+ * memberships (403 otherwise), or unrestricted for super_admin. Under the
+ * old single-team model a non-super_admin was always scoped to exactly one
+ * team server-side, so this filter would have been redundant for them; a
+ * caller on multiple teams now genuinely needs it to narrow the dashboard.
  */
 export interface EnvironmentFilters {
   status?: EnvStatus[]
-  teamId?: string // super_admin only — ignored by the API otherwise
+  teamId?: string
   envType?: EnvType
   healthStatus?: HealthStatus
   expiringWithinHours?: number
@@ -259,9 +288,9 @@ class APIClient {
   }
 
   // --- Teams ----------------------------------------------------------------
-  // list/create/detail/members are all open to any authenticated user now,
-  // scoped by role server-side (see the API's routers/teams.py docstring).
-  // Only addTeamMember stays team_admin(own team)/super_admin(any).
+  // list/create/detail/members are all open to any authenticated user,
+  // scoped server-side: non-super_admin sees only their own teams;
+  // super_admin sees everything. See routers/teams.py's module docstring.
   listTeams = () => this.request<Team[]>('/teams/')
 
   getTeam = (teamId: string) => this.request<TeamDetail>(`/teams/${teamId}`)
@@ -269,30 +298,32 @@ class APIClient {
   createTeam = (body: CreateTeamBody) =>
     this.request<Team>('/teams/', { method: 'POST', body: JSON.stringify(body) })
 
-  listTeamMembers = (teamId: string) => this.request<User[]>(`/teams/${teamId}/members`)
+  listTeamMembers = (teamId: string) => this.request<TeamMember[]>(`/teams/${teamId}/members`)
 
   addTeamMember = (teamId: string, body: AddMemberBody) =>
-    this.request<User>(`/teams/${teamId}/members`, {
+    this.request<TeamMember>(`/teams/${teamId}/members`, {
       method: 'POST',
       body: JSON.stringify(body),
     })
 
-  updateMemberRole = (teamId: string, userId: string, role: Role) =>
-    this.request<User>(`/teams/${teamId}/members/${userId}/role`, {
+  updateMemberRole = (teamId: string, userId: string, role: TeamRole) =>
+    this.request<TeamMember>(`/teams/${teamId}/members/${userId}/role`, {
       method: 'PATCH',
       body: JSON.stringify({ role }),
     })
 
   removeTeamMember = (teamId: string, userId: string) =>
-    this.request<User>(`/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
+    this.request<TeamMember>(`/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
 
   deleteTeam = (teamId: string) =>
     this.request<TeamDeleteResult>(`/teams/${teamId}`, { method: 'DELETE' })
 
-  // --- Users --------------------------------------------------------------
+  // --- Users (platform-wide, super_admin only) -----------------------------
   listUsers = () => this.request<User[]>('/users/')
 
-  changeUserRole = (userId: string, role: Role) =>
+  /** PLATFORM role only — 'user' | 'super_admin'. Not a team role; see
+   * routers/users.py's docstring on why this is a separate concept. */
+  changeUserRole = (userId: string, role: PlatformRole) =>
     this.request<User>(`/users/${userId}/role`, {
       method: 'PATCH',
       body: JSON.stringify({ role }),

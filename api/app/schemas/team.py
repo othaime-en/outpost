@@ -1,14 +1,22 @@
 """
 Pydantic schemas for team endpoints.
 
-Role validation (VALID_ROLES) is imported from schemas/user.py rather than
-redefined here — a team's AddMemberRequest sets a role too, so both files
-share one source of truth for what a valid role string is.
+Role validation (TEAM_ROLES) is imported from schemas/user.py rather than
+redefined here — same sharing pattern as before, just against the new
+split TEAM_ROLES set instead of the old shared VALID_ROLES (see
+schemas/user.py's module docstring for why that split happened).
 
-TeamDetailResponse reuses EnvironmentResponse and UserResponse from the
-sibling schema modules rather than redefining slimmer copies — the team
-detail page shows the exact same environment cards/member rows the rest of
-the UI already knows how to render, so the shapes need to match exactly.
+TeamMemberResponse is new: team-roster endpoints (list_members, add_member,
+update_member_role, remove_member) return this instead of the general
+UserResponse. Under multi-team, "role" in the context of one team's roster
+unambiguously means that team's membership role — a shape distinct from
+UserResponse's platform_role + full membership list, which answers a
+different question ("who is this user, platform-wide").
+
+TeamDetailResponse reuses EnvironmentResponse from the sibling schema
+module rather than redefining a slimmer copy — the team detail page shows
+the exact same environment cards the rest of the UI already knows how to
+render, so the shape needs to match exactly.
 """
 
 import re
@@ -17,7 +25,7 @@ from typing import List
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.environment import EnvironmentResponse
-from app.schemas.user import VALID_ROLES, UserResponse
+from app.schemas.user import TEAM_ROLES
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
@@ -40,6 +48,18 @@ class TeamResponse(BaseModel):
     slug: str
 
 
+class TeamMemberResponse(BaseModel):
+    """A user in the context of ONE specific team's roster. `team_role` is
+    that team's TeamMembership.role — not platform_role, and not
+    necessarily this user's only team membership (they may belong to
+    others; this response only speaks to the team being queried)."""
+
+    id: str
+    username: str
+    email: str | None
+    team_role: str  # 'member' | 'team_admin' on THIS team
+
+
 class TeamDetailResponse(BaseModel):
     """
     Response for GET /teams/{id}. Everything a "what team am I looking at"
@@ -52,7 +72,7 @@ class TeamDetailResponse(BaseModel):
     name: str
     slug: str
     created_at: str
-    members: List[UserResponse]
+    members: List[TeamMemberResponse]
     environments: List[EnvironmentResponse]
     # DESTROYED environments are excluded from this count — "active" means
     # currently occupying (or about to occupy) real AWS resources.
@@ -71,8 +91,8 @@ class AddMemberRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def role_must_be_valid(cls, v: str) -> str:
-        if v not in VALID_ROLES:
-            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
+        if v not in TEAM_ROLES:
+            raise ValueError(f"role must be one of {sorted(TEAM_ROLES)}")
         return v
 
 
@@ -87,8 +107,8 @@ class UpdateMemberRoleRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def role_must_be_valid(cls, v: str) -> str:
-        if v not in VALID_ROLES:
-            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
+        if v not in TEAM_ROLES:
+            raise ValueError(f"role must be one of {sorted(TEAM_ROLES)}")
         return v
 
 

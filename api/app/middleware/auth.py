@@ -7,6 +7,16 @@ know which one was used:
 
   1. JWT Bearer token  — used by the web UI (Authorization: Bearer <jwt>)
   2. X-API-Key header  — used by the CLI (long-lived, bcrypt-hashed at rest)
+
+MULTI-TEAM NOTE: the JWT payload was already decode-side minimal — this
+file only ever read `user_id` out of it, never `team_id`/`role`, even
+before multi-team support (routers/auth.py's _create_jwt is the one that
+wrote those extra, now-removed, claims). Authorization is always resolved
+fresh from the DB on every request, never trusted from the token — that
+was true before this change and remains true now. The one addition here is
+eager-loading `team_memberships` on the way out, so rbac.py's
+team_role()/has_team_role() helpers can filter an already-loaded Python
+list instead of issuing a second query per request.
 """
 
 from __future__ import annotations
@@ -17,7 +27,7 @@ import jwt
 import passlib.hash as ph
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.database import get_db
@@ -68,7 +78,12 @@ def _user_from_jwt(token: str, db: Session) -> Optional[User]:
     if not user_id:
         return None
 
-    return db.query(User).filter(User.id == user_id).first()
+    return (
+        db.query(User)
+        .options(joinedload(User.team_memberships))
+        .filter(User.id == user_id)
+        .first()
+    )
 
 
 def _user_from_api_key(raw_key: str, db: Session) -> Optional[User]:
@@ -78,7 +93,12 @@ def _user_from_api_key(raw_key: str, db: Session) -> Optional[User]:
     non-sensitive key prefix (e.g. first 8 chars) alongside the hash to
     narrow the candidate set before running bcrypt, which is deliberately slow.
     """
-    candidates = db.query(User).filter(User.api_key_hash.isnot(None)).all()
+    candidates = (
+        db.query(User)
+        .options(joinedload(User.team_memberships))
+        .filter(User.api_key_hash.isnot(None))
+        .all()
+    )
     for user in candidates:
         try:
             if ph.bcrypt.verify(raw_key, user.api_key_hash):

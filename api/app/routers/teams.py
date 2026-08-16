@@ -14,65 +14,77 @@ their own team, and team creation required a super_admin as a bottleneck for
 every new team. Both were revisited after real UI usage surfaced the gap:
 
   - GET /teams   is now open to any authenticated user, scoped by role:
-                 member/team_admin see only their own team (list of 0 or 1);
+                 non-super_admin sees only teams they belong to;
                  super_admin sees all teams.
-  - GET /teams/{id} is new. Same scoping: own team only, unless super_admin.
-                 Returns team info + members + environments + aggregate
-                 stats, so the frontend's team detail page is one call.
-  - POST /teams  is now self-serve: any authenticated user with no team yet
-                 can create one and becomes its team_admin automatically
-                 (never downgrades an existing super_admin). A user who
-                 already belongs to a team is blocked with 400 — multi-team
-                 membership is out of scope for now (single team_id FK on
-                 User), so "create a second team" isn't a supported move.
-                 See the module docstring in models/user.py for the schema
-                 constraint this rests on.
-  - GET /teams/{id}/members is now open to any authenticated user, scoped
-                 the same way as GET /teams/{id} — plain members can see
-                 their teammates (read-only; no admin controls gated behind
-                 this on the frontend). Previously team_admin+ only.
+  - GET /teams/{id} is new. Same scoping: caller's own teams only, unless
+                 super_admin. Returns team info + members + environments +
+                 aggregate stats, so the frontend's team detail page is one call.
+  - POST /teams  is self-serve: any authenticated user can create a team
+                 and becomes its team_admin automatically.
+  - GET /teams/{id}/members is open to any authenticated user who can see
+                 the team at all — plain members can see their teammates
+                 (read-only; no admin controls gated behind this response).
 
-Adding members, and role changes generally, are unchanged: still
-team_admin (own team) / super_admin (any team) for POST .../members, and
-still entirely out of this file for role changes generally — see
-routers/users.py's module docstring for why PATCH /users/{id}/role isn't
-here.
-
-FOLLOW-UP ADDITION — member removal and team deletion.
+FOLLOW-UP — member removal and team deletion (unchanged by multi-team):
 
   - PATCH /teams/{id}/members/{user_id}/role — promotes/demotes an
-    *existing* member within a team. Needed because POST .../members only
-    covers onboarding someone new by GitHub username; there was previously
-    no way to change an existing member's role without going through them
-    as if they were new.
-
-  - DELETE /teams/{id}/members/{user_id} — removes a member from a team
-    (nulls team_id, resets role to "member" unless they're a super_admin).
+    *existing* member within a team.
+  - DELETE /teams/{id}/members/{user_id} — removes a member from a team.
     Self-serve (anyone can remove themselves) or forced (team_admin on own
     team / super_admin on any). Blocked if the target is the team's last
-    remaining team_admin — a team can never be left without one. Promote a
-    peer via the endpoint above first.
-
+    remaining team_admin.
   - DELETE /teams/{id} — team_admin (own team) / super_admin (any team).
-    Blocked unless every environment on the team is DESTROYED (FAILED
-    included — per the architecture doc, a FAILED environment can still
-    have partially-provisioned AWS resources and needs manual resolution
-    first; this is a hard, non-cascading block, deliberately not something
-    team deletion auto-resolves). Members, by contrast, ARE auto-detached
-    as part of deletion — team_id/role bookkeeping in our own DB is fully
-    reversible and has no external side effect, unlike environments, so
-    there's no reason to force a manual "remove everyone first" step for
-    that half of the precondition.
+    Blocked unless every environment on the team is DESTROYED. This is a
+    SOFT delete (teams.deleted_at) — see the Team model's docstring for why.
 
-    This is a SOFT delete (teams.deleted_at), not a hard row delete — see
-    the Team model's own docstring: environments.team_id is NOT NULL with
-    a default (RESTRICT) foreign key, and environment rows are kept
-    forever even after DESTROYED for audit/cost history. Any team that's
-    ever had a single environment would fail a hard delete with a
-    ForeignKeyViolation. Soft-deleted teams are filtered out of every list
-    / get / membership endpoint via _get_active_team_or_404() below, so
-    they behave as gone to normal callers while every historical
-    environment's team_id reference stays valid.
+MULTI-TEAM MEMBERSHIP MIGRATION — what changed in this file and why.
+
+Team membership moved from a single `users.team_id`/`users.role` pair to a
+`team_memberships` table (one row per user-per-team, each with its own
+role). This router is the one most affected:
+
+  - POST / no longer blocks a user who already belongs to a team. Under
+    the old model "you already belong to a team" was a hard 400, because
+    User.team_id could only ever hold one value. That restriction is gone
+    by construction now — creating a second (third, fourth...) team just
+    adds another TeamMembership row. The creator becomes team_admin of the
+    new team regardless of how many other teams they're already on, or
+    what their platform_role is.
+
+  - Every "team_admin (own team) / super_admin (any)" gate that used to be
+    `Depends(require_team_admin)` plus a manual
+    `current_user.role == "team_admin" and current_user.team_id != team_id`
+    check is now `Depends(require_team_role("team_admin"))`. That manual
+    check only worked because a user had exactly one team, so "is
+    team_admin" and "is team_admin OF THIS TEAM" were the same question —
+    under multi-team they're not, and require_team_role checks the role
+    scoped to the team_id in the URL, not a global property of the user.
+
+  - add_member() and update_member_role() both used to explicitly block
+    acting on a user whose (single, shared) `role` was "super_admin" —
+    because writing a team role through that column would have silently
+    overwritten their platform privileges. That guard is now REMOVED. It's
+    not just unneeded, it's structurally impossible for it to matter:
+    TeamMembership.role is a separate column from User.platform_role, and
+    the DB CHECK constraint on TeamMembership.role only permits
+    'member'/'team_admin' — 'super_admin' can never even be written there.
+    A team_admin can now freely add a super_admin to their team or set
+    their team-scoped role, and the super_admin's platform_role is
+    untouched either way. This is the actual bug fix this migration was
+    for, not a side effect of it.
+
+  - The "team_admin can't grant super_admin" guards in add_member/
+    update_member_role are also removed — AddMemberRequest.role and
+    UpdateMemberRoleRequest.role are now validated against TEAM_ROLES
+    ({"member", "team_admin"}) at the schema layer, so submitting
+    "super_admin" through either endpoint is rejected by Pydantic before
+    the handler body ever runs. The guard is redundant, not just
+    unreachable in practice — removing it removes dead code, not a check.
+
+  - add_member() now explicitly 409s if the target user already has a
+    TeamMembership row for this team, rather than silently overwriting one
+    (the old model's `user.team_id = team.id; user.role = body.role` had
+    no such conflict to guard, since a user could only ever be on one team).
 """
 
 from __future__ import annotations
@@ -84,10 +96,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.middleware.rbac import require_member, require_team_admin
+from app.middleware.auth import get_current_user
+from app.middleware.rbac import has_team_role, require_team_role
 from app.models.audit_log import AuditLog
 from app.models.environment import Environment
 from app.models.team import Team
+from app.models.team_membership import TeamMembership
 from app.models.user import User
 from app.schemas.environment import EnvironmentResponse
 from app.schemas.team import (
@@ -95,10 +109,10 @@ from app.schemas.team import (
     CreateTeamRequest,
     TeamDeleteResponse,
     TeamDetailResponse,
+    TeamMemberResponse,
     TeamResponse,
     UpdateMemberRoleRequest,
 )
-from app.schemas.user import UserResponse
 
 router = APIRouter()
 
@@ -113,14 +127,12 @@ def _team_response(team: Team) -> TeamResponse:
     return TeamResponse(id=str(team.id), name=team.name, slug=team.slug)
 
 
-def _member_response(user: User) -> UserResponse:
-    return UserResponse(
-        id=str(user.id),
-        username=user.username,
-        email=user.email,
-        role=user.role,
-        team_id=str(user.team_id) if user.team_id else None,
-    )
+def _team_member_response(user: User, role: str) -> TeamMemberResponse:
+    """Builds a team-roster entry from a User plus that user's role on the
+    ONE team being queried. `role` is passed explicitly rather than read
+    off the user, since a user's role varies per team under multi-team
+    membership — there's no single "the" role to read off User anymore."""
+    return TeamMemberResponse(id=str(user.id), username=user.username, email=user.email, team_role=role)
 
 
 def _environment_response(env: Environment) -> EnvironmentResponse:
@@ -149,12 +161,6 @@ def _environment_response(env: Environment) -> EnvironmentResponse:
     )
 
 
-def _assert_team_visibility(team_id: str, current_user: User) -> None:
-    """super_admin sees every team; everyone else is scoped to their own."""
-    if current_user.role != "super_admin" and str(current_user.team_id) != team_id:
-        raise HTTPException(status_code=403, detail="Not your team")
-
-
 def _get_active_team_or_404(db: Session, team_id: str) -> Team:
     """Fetches a team, treating a soft-deleted one as not found — a deleted
     team should behave as absent to every caller except the audit log."""
@@ -164,24 +170,42 @@ def _get_active_team_or_404(db: Session, team_id: str) -> Team:
     return team
 
 
+def _is_last_team_admin(db: Session, team_id: str, membership: TeamMembership) -> bool:
+    """True if `membership` is a team_admin row on `team_id` and no other
+    team_admin membership exists for that team. Used to block both
+    demotion and removal of the last admin standing — a team must always
+    have at least one.
+
+    Unlike has_team_role()/team_role(), this genuinely needs a DB query —
+    it's asking about every OTHER membership on the team, not just the
+    current user's own eager-loaded rows."""
+    if membership.role != "team_admin":
+        return False
+    other_admins = (
+        db.query(TeamMembership)
+        .filter(
+            TeamMembership.team_id == team_id,
+            TeamMembership.role == "team_admin",
+            TeamMembership.id != membership.id,
+        )
+        .count()
+    )
+    return other_admins == 0
+
+
 @router.post("/", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
 def create_team(
     body: CreateTeamRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    Self-serve team creation. Any authenticated user with no team yet can
-    create one; the creator becomes its team_admin. A user already on a
-    team is blocked — see this module's docstring for why multi-team
-    membership isn't supported.
+    Self-serve team creation. Any authenticated user can create a team and
+    becomes its team_admin — including a user who already belongs to one
+    or more other teams, and including a super_admin (whose platform_role
+    is unaffected either way; the team_admin membership is purely
+    team-scoped, per this module's docstring).
     """
-    if current_user.team_id:
-        raise HTTPException(
-            status_code=400,
-            detail="You already belong to a team. Leave your current team before creating a new one.",
-        )
-
     existing = db.query(Team).filter(
         (Team.name == body.name) | (Team.slug == body.slug)
     ).first()
@@ -192,11 +216,7 @@ def create_team(
     db.add(team)
     db.flush()  # populate team.id before we reference it below
 
-    current_user.team_id = team.id
-    # Never downgrade an existing super_admin to team_admin — super_admin
-    # is a strict superset of what team_admin can do.
-    if current_user.role != "super_admin":
-        current_user.role = "team_admin"
+    db.add(TeamMembership(user_id=current_user.id, team_id=team.id, role="team_admin"))
 
     db.add(
         AuditLog(
@@ -219,14 +239,16 @@ def create_team(
 @router.get("/", response_model=List[TeamResponse])
 def list_teams(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
-    """super_admin sees every team. Everyone else sees only their own (0 or 1)."""
+    """super_admin sees every team. Everyone else sees only teams they
+    currently hold a membership on (zero, one, or many)."""
     query = db.query(Team).filter(Team.deleted_at.is_(None))
-    if current_user.role != "super_admin":
-        if not current_user.team_id:
+    if current_user.platform_role != "super_admin":
+        team_ids = [m.team_id for m in current_user.team_memberships]
+        if not team_ids:
             return []
-        query = query.filter(Team.id == current_user.team_id)
+        query = query.filter(Team.id.in_(team_ids))
     teams = query.order_by(Team.name).all()
     return [_team_response(t) for t in teams]
 
@@ -235,16 +257,24 @@ def list_teams(
 def get_team(
     team_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Team info + members + environments + aggregate stats in one call, so the
     frontend's team detail page doesn't need three separate round trips.
     """
     team = _get_active_team_or_404(db, team_id)
-    _assert_team_visibility(team_id, current_user)
+    if not has_team_role(current_user, team_id):
+        raise HTTPException(status_code=403, detail="Not your team")
 
-    members = db.query(User).filter(User.team_id == team.id).order_by(User.username).all()
+    memberships = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .filter(TeamMembership.team_id == team.id)
+        .all()
+    )
+    memberships.sort(key=lambda m: m.user.username)
+
     environments = (
         db.query(Environment)
         .options(joinedload(Environment.team), joinedload(Environment.creator))
@@ -265,47 +295,47 @@ def get_team(
         name=team.name,
         slug=team.slug,
         created_at=team.created_at.isoformat(),
-        members=[_member_response(m) for m in members],
+        members=[_team_member_response(m.user, m.role) for m in memberships],
         environments=[_environment_response(e) for e in environments],
         active_environment_count=active_count,
         estimated_monthly_cost_usd=round(estimated_cost, 2),
     )
 
 
-@router.get("/{team_id}/members", response_model=List[UserResponse])
+@router.get("/{team_id}/members", response_model=List[TeamMemberResponse])
 def list_members(
     team_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Read-only for everyone who can see the team at all — including plain
-    members. Previously team_admin+ only; opened up because there's no
-    admin action gated behind this response, just a member roster.
+    members. No admin action is gated behind this response, just a roster.
     """
     _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
-    _assert_team_visibility(team_id, current_user)
+    if not has_team_role(current_user, team_id):
+        raise HTTPException(status_code=403, detail="Not your team")
 
-    members = db.query(User).filter(User.team_id == team_id).order_by(User.username).all()
-    return [_member_response(m) for m in members]
+    memberships = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .filter(TeamMembership.team_id == team_id)
+        .all()
+    )
+    memberships.sort(key=lambda m: m.user.username)
+    return [_team_member_response(m.user, m.role) for m in memberships]
 
 
-@router.post("/{team_id}/members", response_model=UserResponse)
+@router.post("/{team_id}/members", response_model=TeamMemberResponse)
 def add_member(
     team_id: str,
     body: AddMemberRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_team_admin),
+    current_user: User = Depends(require_team_role("team_admin")),
 ):
-    """Unchanged: adding members is still team_admin (own team) / super_admin (any)."""
-    if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
-        raise HTTPException(status_code=403, detail="You can only add members to your own team")
-
+    """team_admin (own team) / super_admin (any team) — enforced by the
+    require_team_role dependency, scoped to this specific team_id."""
     team = _get_active_team_or_404(db, team_id)
-
-    # A team_admin can promote a peer to team_admin, but never to super_admin.
-    if current_user.role == "team_admin" and body.role == "super_admin":
-        raise HTTPException(status_code=403, detail="Only a super_admin can grant the super_admin role")
 
     user = db.query(User).filter(User.username == body.github_username).first()
     if not user:
@@ -314,21 +344,16 @@ def add_member(
             detail="User not found — they must log in with GitHub at least once first",
         )
 
-    # A team-scoped action must never be able to write a role onto a
-    # super_admin — that field is platform-wide, not team-wide, and a
-    # team_admin has no authority over it. Without this guard, adding an
-    # existing super_admin to a team here would silently overwrite their
-    # role with whatever `body.role` was (typically "member"), permanently
-    # corrupting their platform privileges.
-    if user.role == "super_admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot change a super_admin's role via team management. "
-            "Use PATCH /users/{id}/role instead.",
-        )
+    existing_membership = (
+        db.query(TeamMembership)
+        .filter(TeamMembership.user_id == user.id, TeamMembership.team_id == team.id)
+        .first()
+    )
+    if existing_membership:
+        raise HTTPException(status_code=409, detail="User is already a member of this team")
 
-    user.team_id = team.id
-    user.role = body.role
+    membership = TeamMembership(user_id=user.id, team_id=team.id, role=body.role)
+    db.add(membership)
 
     db.add(
         AuditLog(
@@ -343,67 +368,42 @@ def add_member(
         )
     )
     db.commit()
-    db.refresh(user)
-    return _member_response(user)
+    return _team_member_response(user, membership.role)
 
 
-def _is_last_team_admin(db: Session, team_id, user: User) -> bool:
-    """True if `user` is a team_admin on `team_id` and no other team_admin
-    exists on that team. Used to block both demotion and removal of the
-    last admin standing — a team must always have at least one."""
-    if user.role != "team_admin":
-        return False
-    other_admins = (
-        db.query(User)
-        .filter(User.team_id == team_id, User.role == "team_admin", User.id != user.id)
-        .count()
-    )
-    return other_admins == 0
-
-
-@router.patch("/{team_id}/members/{user_id}/role", response_model=UserResponse)
+@router.patch("/{team_id}/members/{user_id}/role", response_model=TeamMemberResponse)
 def update_member_role(
     team_id: str,
     user_id: str,
     body: UpdateMemberRoleRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_team_admin),
+    current_user: User = Depends(require_team_role("team_admin")),
 ):
     """
     Promotes or demotes an existing member of `team_id`. Distinct from the
     onboarding flow (POST .../members, which looks a user up by GitHub
     username) and from the platform-wide PATCH /users/{id}/role (super_admin
-    only, works even for team-less users — see routers/users.py).
+    only — see routers/users.py).
     """
-    if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
-        raise HTTPException(status_code=403, detail="You can only manage your own team's members")
-    if current_user.role == "team_admin" and body.role == "super_admin":
-        raise HTTPException(status_code=403, detail="Only a super_admin can grant the super_admin role")
-
     _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
 
-    target = db.query(User).filter(User.id == user_id, User.team_id == team_id).first()
-    if not target:
+    target_membership = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .filter(TeamMembership.user_id == user_id, TeamMembership.team_id == team_id)
+        .first()
+    )
+    if not target_membership:
         raise HTTPException(status_code=404, detail="User is not a member of this team")
 
-    # Same guard as add_member: a team-scoped role change must never touch
-    # a super_admin's role, even if they happen to have a team_id set. See
-    # that endpoint's comment for the full reasoning.
-    if target.role == "super_admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot change a super_admin's role via team management. "
-            "Use PATCH /users/{id}/role instead.",
-        )
-
-    if body.role != "team_admin" and _is_last_team_admin(db, team_id, target):
+    if body.role != "team_admin" and _is_last_team_admin(db, team_id, target_membership):
         raise HTTPException(
             status_code=400,
             detail="Cannot demote the team's last team_admin. Promote another member first.",
         )
 
-    old_role = target.role
-    target.role = body.role
+    old_role = target_membership.role
+    target_membership.role = body.role
 
     db.add(
         AuditLog(
@@ -411,8 +411,8 @@ def update_member_role(
             action="USER_ROLE_CHANGED",
             actor_type="user",
             event_metadata={
-                "user_id": str(target.id),
-                "username": target.username,
+                "user_id": str(target_membership.user_id),
+                "username": target_membership.user.username,
                 "team_id": team_id,
                 "old_role": old_role,
                 "new_role": body.role,
@@ -420,59 +420,63 @@ def update_member_role(
         )
     )
     db.commit()
-    db.refresh(target)
-    return _member_response(target)
+    return _team_member_response(target_membership.user, target_membership.role)
 
 
-@router.delete("/{team_id}/members/{user_id}", response_model=UserResponse)
+@router.delete("/{team_id}/members/{user_id}", response_model=TeamMemberResponse)
 def remove_member(
     team_id: str,
     user_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    Removes a member from a team. Self-serve — anyone can call this on
-    their own user_id to leave. Also usable by that team's team_admin (own
-    team) or a super_admin (any team) to forcibly remove someone else.
-    Blocked if the target is the team's last team_admin — see
-    update_member_role() above for how to hand off admin first.
+    Removes a member from a team (deletes their TeamMembership row for it —
+    any OTHER team memberships they hold are untouched). Self-serve —
+    anyone can call this on their own user_id to leave. Also usable by that
+    team's team_admin (own team) or a super_admin (any team) to forcibly
+    remove someone else. Blocked if the target is the team's last
+    team_admin — see update_member_role() above for how to hand off first.
     """
     _get_active_team_or_404(db, team_id)  # 404s if missing/soft-deleted; team itself unused below
 
     is_self = str(current_user.id) == user_id
-    is_forced_by_admin = current_user.role == "super_admin" or (
-        current_user.role == "team_admin" and str(current_user.team_id) == team_id
-    )
+    is_forced_by_admin = has_team_role(current_user, team_id, "team_admin")
     if not is_self and not is_forced_by_admin:
         raise HTTPException(
             status_code=403,
             detail="You can only remove yourself, unless you're this team's team_admin or a super_admin",
         )
 
-    target = db.query(User).filter(User.id == user_id, User.team_id == team_id).first()
-    if not target:
+    target_membership = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .filter(TeamMembership.user_id == user_id, TeamMembership.team_id == team_id)
+        .first()
+    )
+    if not target_membership:
         raise HTTPException(status_code=404, detail="User is not a member of this team")
 
-    if _is_last_team_admin(db, team_id, target):
+    if _is_last_team_admin(db, team_id, target_membership):
         raise HTTPException(
             status_code=400,
             detail="Cannot remove the team's last team_admin. Promote another member first.",
         )
 
-    old_role = target.role
-    target.team_id = None
-    if target.role != "super_admin":
-        target.role = "member"
+    # Capture everything the response/audit log needs before delete+commit —
+    # the ORM object may be expired once the transaction commits.
+    removed_user = target_membership.user
+    old_role = target_membership.role
 
+    db.delete(target_membership)
     db.add(
         AuditLog(
             actor_id=current_user.id,
             action="USER_REMOVED",
             actor_type="user",
             event_metadata={
-                "user_id": str(target.id),
-                "username": target.username,
+                "user_id": str(removed_user.id),
+                "username": removed_user.username,
                 "team_id": team_id,
                 "old_role": old_role,
                 "self_serve": is_self,
@@ -480,15 +484,14 @@ def remove_member(
         )
     )
     db.commit()
-    db.refresh(target)
-    return _member_response(target)
+    return _team_member_response(removed_user, old_role)
 
 
 @router.delete("/{team_id}", response_model=TeamDeleteResponse)
 def delete_team(
     team_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_team_admin),
+    current_user: User = Depends(require_team_role("team_admin")),
 ):
     """
     Deletes (soft-deletes) a team. team_admin (own team) / super_admin (any team).
@@ -500,13 +503,10 @@ def delete_team(
     differently here, and the Team model's docstring for why this can't be
     a hard row delete.
 
-    Remaining members are auto-detached (team_id/role bookkeeping only, no
-    external side effect) as part of this same transaction — no separate
-    "remove everyone first" step required.
+    Remaining members are auto-detached as part of this same transaction —
+    their TeamMembership rows for THIS team are deleted; any memberships
+    they hold on other teams are untouched.
     """
-    if current_user.role == "team_admin" and str(current_user.team_id) != team_id:
-        raise HTTPException(status_code=403, detail="You can only delete your own team")
-
     team = _get_active_team_or_404(db, team_id)
 
     non_destroyed = (
@@ -523,12 +523,15 @@ def delete_team(
             ),
         )
 
-    members = db.query(User).filter(User.team_id == team_id).all()
-    detached_usernames = [m.username for m in members]
-    for m in members:
-        m.team_id = None
-        if m.role != "super_admin":
-            m.role = "member"
+    memberships = (
+        db.query(TeamMembership)
+        .options(joinedload(TeamMembership.user))
+        .filter(TeamMembership.team_id == team_id)
+        .all()
+    )
+    detached_usernames = [m.user.username for m in memberships]
+    for m in memberships:
+        db.delete(m)
 
     team_name, team_slug = team.name, team.slug
     team.deleted_at = datetime.now(timezone.utc)

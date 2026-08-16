@@ -1,14 +1,5 @@
 """
 Environment Lifecycle Integration Tests
-
-Covers the full state machine end-to-end: create → list → get → destroy,
-TTL extension, the GitHub Actions callback (RUNNING / DESTROYED / FAILED),
-the TTL cron's /expired feed, the cost preview calculator, and runbooks.
-
-`trigger_provision` / `trigger_destroy` are mocked via the `mock_terraform`
-fixture below rather than left to their real no-op-without-config fallback,
-so tests can assert *what* would have been dispatched, not just that the
-request didn't crash.
 """
 
 from __future__ import annotations
@@ -24,6 +15,7 @@ from app.config import settings
 from app.models.audit_log import AuditLog
 from app.models.environment import Environment
 from app.models.runbook import Runbook
+from app.models.team_membership import TeamMembership
 from app.models.user import User
 from app.services import terraform
 
@@ -80,13 +72,15 @@ def _make_other_team_owner(db_session, team_id: uuid.UUID) -> User:
         github_id=uuid.uuid4().int % (2**62),
         username=f"other-team-owner-{uuid.uuid4().hex[:8]}",
         email=f"{uuid.uuid4().hex[:8]}@example.com",
-        role="member",
-        team_id=team_id,
+        platform_role="user",
     )
     db_session.add(owner)
     db_session.commit()
     db_session.refresh(owner)
     db_session.track_user(owner)
+
+    db_session.add(TeamMembership(user_id=owner.id, team_id=team_id, role="member"))
+    db_session.commit()
     return owner
 
 
@@ -133,53 +127,71 @@ class TestCostPreview:
 
 class TestCreateEnvironment:
     def test_requires_auth(self, client: TestClient):
+        # A syntactically valid team_id so the ONLY failure reason is
+        # missing auth, not incidental body validation.
         response = client.post(
-            "/environments/", json={"name": "x", "env_type": "dev", "ttl_hours": 24}
+            "/environments/",
+            json={"name": "x", "team_id": str(uuid.uuid4()), "env_type": "dev", "ttl_hours": 24},
         )
         assert response.status_code == 401
 
-    def test_member_without_team_is_rejected(
-        self, client: TestClient, member_without_team_token: str
-    ):
+    def test_missing_team_id_is_rejected(self, client: TestClient, member_token: str):
         response = client.post(
             "/environments/",
             json={"name": "no-team-env", "env_type": "dev", "ttl_hours": 24},
+            headers=_auth(member_token),
+        )
+        assert response.status_code == 422
+
+    def test_team_you_are_not_a_member_of_is_rejected(
+        self, client: TestClient, member_without_team_token: str, test_team
+    ):
+        """A syntactically valid team_id the caller has no membership on —
+        different failure mode than the missing-field case above: this is
+        has_team_role() rejecting it at the handler level (403), not
+        Pydantic rejecting the shape of the request (422)."""
+        response = client.post(
+            "/environments/",
+            json={"name": "wrong-team-env", "team_id": str(test_team.id), "env_type": "dev", "ttl_hours": 24},
             headers=_auth(member_without_team_token),
         )
-        assert response.status_code == 400
+        assert response.status_code == 403
 
-    def test_invalid_name_pattern_is_rejected(
-        self, client: TestClient, member_token: str
-    ):
+    def test_invalid_name_pattern_is_rejected(self, client: TestClient, member_token: str, test_team):
         response = client.post(
             "/environments/",
-            json={"name": "Not_Valid", "env_type": "dev", "ttl_hours": 24},
+            json={"name": "Not_Valid", "team_id": str(test_team.id), "env_type": "dev", "ttl_hours": 24},
             headers=_auth(member_token),
         )
         assert response.status_code == 422
 
-    def test_invalid_env_type_is_rejected(self, client: TestClient, member_token: str):
+    def test_invalid_env_type_is_rejected(self, client: TestClient, member_token: str, test_team):
         response = client.post(
             "/environments/",
-            json={"name": "valid-name", "env_type": "prod", "ttl_hours": 24},
+            json={"name": "valid-name", "team_id": str(test_team.id), "env_type": "prod", "ttl_hours": 24},
             headers=_auth(member_token),
         )
         assert response.status_code == 422
 
-    def test_ttl_out_of_range_is_rejected(self, client: TestClient, member_token: str):
+    def test_ttl_out_of_range_is_rejected(self, client: TestClient, member_token: str, test_team):
         response = client.post(
             "/environments/",
-            json={"name": "valid-name", "env_type": "dev", "ttl_hours": 999},
+            json={"name": "valid-name", "team_id": str(test_team.id), "env_type": "dev", "ttl_hours": 999},
             headers=_auth(member_token),
         )
         assert response.status_code == 422
 
     def test_success_returns_202_pending(
-        self, client: TestClient, member_token: str, db_session, mock_terraform
+        self, client: TestClient, member_token: str, test_team, db_session, mock_terraform
     ):
         response = client.post(
             "/environments/",
-            json={"name": f"env-{uuid.uuid4().hex[:8]}", "env_type": "dev", "ttl_hours": 24},
+            json={
+                "name": f"env-{uuid.uuid4().hex[:8]}",
+                "team_id": str(test_team.id),
+                "env_type": "dev",
+                "ttl_hours": 24,
+            },
             headers=_auth(member_token),
         )
         assert response.status_code == 202
@@ -189,11 +201,16 @@ class TestCreateEnvironment:
         _track(db_session, body["env_id"])
 
     def test_creates_row_with_cost_estimate_and_writes_audit_log(
-        self, client: TestClient, member_user, member_token: str, db_session, mock_terraform
+        self, client: TestClient, member_user, test_team, member_token: str, db_session, mock_terraform
     ):
         response = client.post(
             "/environments/",
-            json={"name": f"env-{uuid.uuid4().hex[:8]}", "env_type": "staging", "ttl_hours": 48},
+            json={
+                "name": f"env-{uuid.uuid4().hex[:8]}",
+                "team_id": str(test_team.id),
+                "env_type": "staging",
+                "ttl_hours": 48,
+            },
             headers=_auth(member_token),
         )
         env_id = response.json()["env_id"]
@@ -203,7 +220,7 @@ class TestCreateEnvironment:
         assert env is not None
         assert env.status == "PENDING"
         assert env.created_by == member_user.id
-        assert env.team_id == member_user.team_id
+        assert env.team_id == test_team.id
         assert env.cost_estimate_usd is not None
         assert float(env.cost_estimate_usd) > 0
 
@@ -222,7 +239,12 @@ class TestCreateEnvironment:
     ):
         response = client.post(
             "/environments/",
-            json={"name": "dispatch-check", "env_type": "dev", "ttl_hours": 12},
+            json={
+                "name": "dispatch-check",
+                "team_id": str(test_team.id),
+                "env_type": "dev",
+                "ttl_hours": 12,
+            },
             headers=_auth(member_token),
         )
         env_id = response.json()["env_id"]
@@ -259,6 +281,40 @@ class TestListEnvironments:
         assert response.status_code == 200
         ids = {e["id"] for e in response.json()}
         assert str(env.id) in ids
+
+    def test_user_on_two_teams_sees_environments_from_both(
+        self, client: TestClient, user_on_two_teams, user_on_two_teams_token,
+        test_team, second_team, make_environment,
+    ):
+        env_a = make_environment(team_id=test_team.id, created_by=user_on_two_teams.id)
+        env_b = make_environment(team_id=second_team.id, created_by=user_on_two_teams.id)
+
+        response = client.get("/environments/", headers=_auth(user_on_two_teams_token))
+        assert response.status_code == 200
+        ids = {e["id"] for e in response.json()}
+        assert str(env_a.id) in ids
+        assert str(env_b.id) in ids
+
+    def test_team_id_filter_narrows_to_one_of_callers_own_teams(
+        self, client: TestClient, user_on_two_teams, user_on_two_teams_token,
+        test_team, second_team, make_environment,
+    ):
+        env_a = make_environment(team_id=test_team.id, created_by=user_on_two_teams.id)
+        make_environment(team_id=second_team.id, created_by=user_on_two_teams.id)
+
+        response = client.get(
+            f"/environments/?team_id={test_team.id}", headers=_auth(user_on_two_teams_token)
+        )
+        assert response.status_code == 200
+        ids = {e["id"] for e in response.json()}
+        assert ids == {str(env_a.id)}
+
+    def test_team_id_filter_rejects_a_team_the_caller_is_not_on(
+        self, client: TestClient, member_token, db_session, super_admin_token
+    ):
+        other_team_id = _make_other_team(client, super_admin_token, db_session)
+        response = client.get(f"/environments/?team_id={other_team_id}", headers=_auth(member_token))
+        assert response.status_code == 403
 
 
 class TestGetEnvironment:
@@ -299,6 +355,16 @@ class TestGetEnvironment:
         env = make_environment(team_id=test_team.id, created_by=member_user.id)
         response = client.get(f"/environments/{env.id}", headers=_auth(super_admin_token))
         assert response.status_code == 200
+
+    def test_user_on_two_teams_can_view_environments_on_either(
+        self, client: TestClient, user_on_two_teams, user_on_two_teams_token,
+        test_team, second_team, make_environment,
+    ):
+        env_a = make_environment(team_id=test_team.id, created_by=user_on_two_teams.id)
+        env_b = make_environment(team_id=second_team.id, created_by=user_on_two_teams.id)
+
+        assert client.get(f"/environments/{env_a.id}", headers=_auth(user_on_two_teams_token)).status_code == 200
+        assert client.get(f"/environments/{env_b.id}", headers=_auth(user_on_two_teams_token)).status_code == 200
 
 
 class TestDestroyEnvironment:
@@ -356,6 +422,44 @@ class TestDestroyEnvironment:
         response = client.delete(f"/environments/{env.id}", headers=_auth(member_token))
         assert response.status_code == 202
 
+    def test_no_membership_on_this_environments_team_is_forbidden(
+        self, client: TestClient, member_token, super_admin_token, db_session, make_environment, mock_terraform,
+    ):
+        """A user with no membership on the environment's team at all —
+        distinct from the ownership-based 403 above, which is for a
+        teammate who just isn't the creator. This is "not on this team,
+        full stop"."""
+        other_team_id = _make_other_team(client, super_admin_token, db_session)
+        owner = _make_other_team_owner(db_session, uuid.UUID(other_team_id))
+        env = make_environment(team_id=uuid.UUID(other_team_id), created_by=owner.id, status="RUNNING")
+
+        response = client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+        assert response.status_code == 403
+
+    def test_team_admin_on_other_team_cannot_destroy_this_team_environment(
+        self, client: TestClient, user_on_two_teams, user_on_two_teams_token,
+        test_team, second_team, member_user, make_environment, mock_terraform,
+    ):
+        """
+        The scoping test the old single-team suite couldn't even express:
+        user_on_two_teams IS a team_admin — but only on second_team.
+        On test_team, they hold no membership at all. Their admin status on
+        the OTHER team must grant them nothing here.
+        """
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
+        response = client.delete(f"/environments/{env.id}", headers=_auth(user_on_two_teams_token))
+        assert response.status_code == 403
+
+    def test_team_admin_can_destroy_on_the_team_they_actually_admin(
+        self, client: TestClient, user_on_two_teams, user_on_two_teams_token,
+        second_team, make_environment, mock_terraform,
+    ):
+        """Same user as above, but acting on second_team — where they
+        genuinely are team_admin — succeeds."""
+        env = make_environment(team_id=second_team.id, created_by=user_on_two_teams.id, status="RUNNING")
+        response = client.delete(f"/environments/{env.id}", headers=_auth(user_on_two_teams_token))
+        assert response.status_code == 202
+
 
 class TestExtendTTL:
     def test_requires_auth(self, client: TestClient):
@@ -404,6 +508,18 @@ class TestExtendTTL:
             f"/environments/{env.id}/ttl", json={"extend_hours": 0}, headers=_auth(member_token)
         )
         assert response.status_code == 422
+
+    def test_cross_team_extend_is_forbidden(
+        self, client: TestClient, member_token, super_admin_token, db_session, make_environment,
+    ):
+        other_team_id = _make_other_team(client, super_admin_token, db_session)
+        owner = _make_other_team_owner(db_session, uuid.UUID(other_team_id))
+        env = make_environment(team_id=uuid.UUID(other_team_id), created_by=owner.id, status="RUNNING")
+
+        response = client.patch(
+            f"/environments/{env.id}/ttl", json={"extend_hours": 24}, headers=_auth(member_token)
+        )
+        assert response.status_code == 403
 
 
 class TestCallback:

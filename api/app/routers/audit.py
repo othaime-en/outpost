@@ -1,10 +1,16 @@
 """
 Audit Log Queries
 
-Read-only. A member/team_admin sees audit rows tied to their own team's
-environments, plus any action they personally performed even when it isn't
-tied to an environment at all (e.g. API_KEY_GENERATED, TEAM_CREATED).
-super_admin sees every row, unfiltered by team.
+Read-only. A non-super_admin sees audit rows tied to any environment on any
+team they belong to, plus any action they personally performed even when
+it isn't tied to an environment at all (e.g. API_KEY_GENERATED,
+TEAM_CREATED). super_admin sees every row, unfiltered by team.
+
+MULTI-TEAM CHANGE: team scoping used to be a single equality filter
+(Environment.team_id == current_user.team_id). Now that a caller can
+belong to several teams, it's an `.in_()` over every team_id from their
+eager-loaded team_memberships instead — same shape of query, just no
+longer assuming there's only ever one team to compare against.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.middleware.rbac import require_member
+from app.middleware.auth import get_current_user
 from app.models.audit_log import AuditLog
 from app.models.environment import Environment
 from app.models.user import User
@@ -40,7 +46,7 @@ def _log_response(log: AuditLog) -> AuditLogResponse:
 @router.get("/", response_model=PaginatedAuditResponse)
 def list_audit_logs(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_member),
+    current_user: User = Depends(get_current_user),
     environment_id: Optional[str] = Query(default=None),
     action: Optional[str] = Query(default=None),
     actor_type: Optional[str] = Query(default=None),
@@ -49,10 +55,9 @@ def list_audit_logs(
 ):
     query = db.query(AuditLog)
 
-    if current_user.role != "super_admin":
-        team_env_ids = db.query(Environment.id).filter(
-            Environment.team_id == current_user.team_id
-        )
+    if current_user.platform_role != "super_admin":
+        own_team_ids = [m.team_id for m in current_user.team_memberships]
+        team_env_ids = db.query(Environment.id).filter(Environment.team_id.in_(own_team_ids))
         query = query.filter(
             or_(
                 AuditLog.environment_id.in_(team_env_ids),
