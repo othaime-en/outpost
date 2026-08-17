@@ -16,6 +16,16 @@ would raise a ForeignKeyViolation for any team that ever had a single
 environment — which is effectively every team that's actually been used.
 See routers/teams.py's delete_team() for the enforcement.
 
+`name`/`slug` uniqueness is enforced at the DB layer by partial unique
+indexes (`uq_teams_name_active`, `uq_teams_slug_active`, both
+`WHERE deleted_at IS NULL`) added in migration c9c869c63ffd — NOT by a
+plain column-level UNIQUE constraint, which is why `unique=True` isn't set
+on either Column below. A soft-deleted team's name/slug are intentionally
+free to be reused by a new (or another soft-deleted) team; only ACTIVE
+teams must be unique against each other. routers/teams.py's create_team()
+mirrors this with an explicit `Team.deleted_at.is_(None)` filter on its
+duplicate check — the two must stay in sync.
+
 Relationships:
   Team → TeamMembership: one-to-many (a team has many memberships — this
                           replaces the old direct Team → User relationship
@@ -44,14 +54,18 @@ class Team(Base):
     name = Column(
         String,
         nullable=False,
-        unique=True,
-        comment="Human-readable team name, e.g. 'Platform Engineering'",
+        comment=(
+            "Human-readable team name, e.g. 'Platform Engineering'. "
+            "Unique among ACTIVE teams only — see module docstring."
+        ),
     )
     slug = Column(
         String,
         nullable=False,
-        unique=True,
-        comment="URL-safe identifier used in AWS resource tags, e.g. 'platform-eng'",
+        comment=(
+            "URL-safe identifier used in AWS resource tags, e.g. 'platform-eng'. "
+            "Unique among ACTIVE teams only — see module docstring."
+        ),
     )
     created_at = Column(
         DateTime(timezone=True),
