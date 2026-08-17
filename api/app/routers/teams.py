@@ -205,9 +205,15 @@ def create_team(
     or more other teams, and including a super_admin (whose platform_role
     is unaffected either way; the team_admin membership is purely
     team-scoped, per this module's docstring).
+
+    The duplicate check below is scoped to ACTIVE teams only
+    (`deleted_at.is_(None)`), matching the partial unique indexes added in
+    c9c869c63ffd — a soft-deleted team's name/slug must not stay reserved
+    forever. See that migration's docstring for the full reasoning.
     """
     existing = db.query(Team).filter(
-        (Team.name == body.name) | (Team.slug == body.slug)
+        Team.deleted_at.is_(None),
+        (Team.name == body.name) | (Team.slug == body.slug),
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="A team with that name or slug already exists")
