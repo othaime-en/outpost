@@ -102,6 +102,84 @@ def test_duplicate_team_name_or_slug_is_rejected(client, member_without_team_tok
     assert resp.status_code == 409
 
 
+def test_name_and_slug_are_reusable_after_soft_delete(client, team_admin_token, test_team, db_session):
+    """Regression test for e9c869c63ffd: a deleted team's name/slug must
+    not stay reserved forever. Delete `test_team` (no environments, so
+    delete_team()'s precondition is satisfied for free), then create a
+    brand-new team reusing its exact name and slug — this must succeed,
+    not 409."""
+    name, slug = test_team.name, test_team.slug
+
+    delete_resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert delete_resp.status_code == 200
+
+    create_resp = client.post(
+        "/teams/",
+        json={"name": name, "slug": slug},
+        headers=_auth(team_admin_token),
+    )
+    assert create_resp.status_code == 201
+    new_team_id = create_resp.json()["id"]
+    assert new_team_id != str(test_team.id)
+    db_session.track_team(Team(id=uuid.UUID(new_team_id)))
+
+
+def test_duplicate_check_ignores_soft_deleted_teams_even_with_different_creator(
+    client, team_admin_token, member_without_team_token, test_team, db_session
+):
+    """Same as above, but the re-creation is done by a totally different
+    user than the one who deleted the original team — makes sure the
+    active-only scoping isn't accidentally keyed off the actor."""
+    name, slug = test_team.name, test_team.slug
+
+    delete_resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert delete_resp.status_code == 200
+
+    create_resp = client.post(
+        "/teams/",
+        json={"name": name, "slug": slug},
+        headers=_auth(member_without_team_token),
+    )
+    assert create_resp.status_code == 201
+    new_team_id = create_resp.json()["id"]
+    db_session.track_team(Team(id=uuid.UUID(new_team_id)))
+
+
+def test_two_soft_deleted_teams_can_share_a_name(client, team_admin_token, test_team, second_team, db_session):
+    """Two different teams, both later soft-deleted, ending up with the
+    same name isn't just tolerated when creating one at a time (covered
+    above) — it must also not violate the partial unique index directly,
+    since both rows persist afterward with deleted_at set."""
+    shared_name = test_team.name
+
+    # Soft-delete test_team FIRST — renaming second_team to match while
+    # test_team is still active would itself violate the (correct,
+    # unrelated) active-uniqueness constraint before this test even gets
+    # to the behavior it's checking.
+    resp1 = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp1.status_code == 200
+
+    second_team.name = shared_name
+    db_session.commit()
+
+    # second_team's team_admin is a different user than test_team's in the
+    # general case, but team_admin_token belongs to test_team specifically
+    # per the fixture — deleting second_team needs its own admin.
+    from tests.conftest import _make_user, _make_membership, _make_token  # local import: test-only helpers
+
+    admin2 = _make_user(db_session)
+    _make_membership(db_session, user_id=admin2.id, team_id=second_team.id, role="team_admin")
+    admin2_token = _make_token(admin2)
+
+    resp2 = client.delete(f"/teams/{second_team.id}", headers=_auth(admin2_token))
+    assert resp2.status_code == 200
+
+    # Both rows now share `shared_name` and both have deleted_at set — the
+    # partial index (WHERE deleted_at IS NULL) must allow this.
+    active_team = db_session.query(Team).filter(Team.name == shared_name, Team.deleted_at.is_(None)).first()
+    assert active_team is None
+
+
 # --- GET /teams — role-scoped listing --------------------------------------
 
 
