@@ -4,7 +4,7 @@ Revision ID: d1f42494587d
 Revises: c9c869c63ffd
 Create Date: 2026-08-17 00:00:00.000000
 
-Follow-up to e9c869c63ffd, which scoped team name/slug uniqueness to
+Follow-up to c9c869c63ffd, which scoped team name/slug uniqueness to
 active (non-deleted) rows but left it case-SENSITIVE — "Platform Eng" and
 "platform eng" could still coexist as two different active teams, which
 isn't the intent of a uniqueness constraint meant to prevent naming
