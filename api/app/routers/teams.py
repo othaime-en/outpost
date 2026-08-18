@@ -93,6 +93,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -113,6 +114,7 @@ from app.schemas.team import (
     TeamResponse,
     UpdateMemberRoleRequest,
 )
+from app.services.slugify import generate_slug
 
 router = APIRouter()
 
@@ -208,17 +210,42 @@ def create_team(
 
     The duplicate check below is scoped to ACTIVE teams only
     (`deleted_at.is_(None)`), matching the partial unique indexes added in
-    c9c869c63ffd — a soft-deleted team's name/slug must not stay reserved
+    e9c869c63ffd — a soft-deleted team's name/slug must not stay reserved
     forever. See that migration's docstring for the full reasoning.
+
+    CASE-INSENSITIVE UNIQUENESS (69f42494587d): the check compares
+    `func.lower(...)` on both sides, matching the functional partial
+    unique indexes added in that migration — "Platform Eng" and
+    "platform eng" collide as far as this constraint cares. `name` itself
+    is still stored with whatever casing the creator typed; only the
+    comparison is case-insensitive, not the stored value.
+
+    SLUG DERIVATION: `body.slug` is optional — if the caller omits it,
+    it's derived from `body.name` via services/slugify.generate_slug().
+    See that module's docstring for why the frontend doesn't just compute
+    and send this itself (drift risk between a client-side preview and
+    what's actually persisted).
     """
+    slug = body.slug
+    if slug is None:
+        slug = generate_slug(body.name)
+        if not slug:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Couldn't derive a URL-safe slug from that name — "
+                    "please provide one explicitly"
+                ),
+            )
+
     existing = db.query(Team).filter(
         Team.deleted_at.is_(None),
-        (Team.name == body.name) | (Team.slug == body.slug),
+        (func.lower(Team.name) == body.name.lower()) | (func.lower(Team.slug) == slug.lower()),
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="A team with that name or slug already exists")
 
-    team = Team(name=body.name, slug=body.slug)
+    team = Team(name=body.name, slug=slug)
     db.add(team)
     db.flush()  # populate team.id before we reference it below
 
