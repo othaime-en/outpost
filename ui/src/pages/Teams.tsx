@@ -161,18 +161,60 @@ function TeamsGrid({
   )
 }
 
+/**
+ * Mirrors api/app/services/slugify.py's generate_slug() rules exactly:
+ * lowercase, whitespace/underscores -> hyphens, strip anything else,
+ * collapse repeated hyphens, trim leading/trailing hyphens.
+ *
+ * This copy is NOT authoritative — it only drives the live preview as the
+ * user types (see CreateTeamModal below). The backend derives the real
+ * persisted slug itself whenever `slug` is omitted from the request, so a
+ * mismatch here would only ever be a cosmetic preview glitch, never a
+ * correctness bug. If slugify.py's rules ever change, update this to
+ * match or the preview will drift from what actually gets saved.
+ */
+function slugify(input: string, maxLength = 50): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLength)
+    .replace(/-+$/g, '')
+}
+
 function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
+  // The slug field auto-follows `name` until the
+  // user types into it directly, at which point it decouples and holds
+  // whatever they enter (still sanitized live) for the rest of this form.
+  const [slugTouched, setSlugTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  function handleNameChange(value: string) {
+    setName(value)
+    if (!slugTouched) setSlug(slugify(value))
+  }
+
+  function handleSlugChange(value: string) {
+    setSlugTouched(true)
+    setSlug(slugify(value))
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createTeam({ name, slug })
+      // Only send `slug` once the user has actually taken the wheel.
+      // Otherwise omit it entirely and let the API derive + persist it —
+      // see the slugify() docstring above for why the client-side value
+      // isn't just sent as-is in that case.
+      await api.createTeam(slugTouched && slug ? { name, slug } : { name })
       // No manual navigation here — the parent's onCreated() re-fetches
       // listTeams(), and Teams()'s own branching logic (see module
       // docstring) naturally redirects if this was the user's first team,
@@ -191,7 +233,7 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           <label className="mb-1 block text-xs text-gray-500">Team name</label>
           <input
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => handleNameChange(e.target.value)}
             placeholder="Platform Engineering"
             className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
           />
@@ -200,10 +242,13 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           <label className="mb-1 block text-xs text-gray-500">Slug (used in AWS tags)</label>
           <input
             value={slug}
-            onChange={(e) => setSlug(e.target.value)}
+            onChange={(e) => handleSlugChange(e.target.value)}
             placeholder="platform-eng"
             className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
           />
+          <p className="mt-1 text-xs text-gray-600">
+            {slugTouched ? 'Custom slug — edit freely.' : 'Auto-generated from the name above. Click in to customize.'}
+          </p>
         </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
@@ -212,7 +257,7 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </button>
           <button
             type="submit"
-            disabled={busy || !name || !slug}
+            disabled={busy || !name.trim() || (slugTouched && !slug)}
             className="rounded-md bg-cyan-500 px-4 py-1.5 text-sm font-semibold text-gray-950 hover:bg-cyan-400 disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create Team'}
@@ -221,4 +266,5 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
       </form>
     </Modal>
   )
+
 }
