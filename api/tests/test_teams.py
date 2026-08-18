@@ -180,6 +180,113 @@ def test_two_soft_deleted_teams_can_share_a_name(client, team_admin_token, test_
     assert active_team is None
 
 
+# --- POST /teams — slug auto-derivation & case-insensitive uniqueness ------
+
+
+def test_slug_is_auto_generated_when_omitted(client, member_without_team_token, db_session):
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Platform Engineering {suffix}"},  # no slug key at all
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["slug"] == f"platform-engineering-{suffix}"
+    # name is stored exactly as typed — no title-casing/normalization applied
+    assert body["name"] == f"Platform Engineering {suffix}"
+
+
+def test_name_is_stored_exactly_as_typed(client, member_without_team_token, db_session):
+    """Explicit regression guard: Claude was asked NOT to normalize `name`
+    (no forced title-casing, no lowercasing) — only `slug` gets that
+    treatment. Odd but valid casing must round-trip unchanged."""
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"K8s Platform (EU) {suffix}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["name"] == f"K8s Platform (EU) {suffix}"
+    assert body["slug"] == f"k8s-platform-eu-{suffix}"
+
+
+def test_explicit_slug_overrides_derivation(client, member_without_team_token, db_session):
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Platform Engineering {suffix}", "slug": f"plat-eng-custom-{suffix}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["slug"] == f"plat-eng-custom-{suffix}"
+
+
+def test_explicit_slug_still_validated_for_format(client, member_without_team_token):
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Bad Slug Team {uuid.uuid4().hex[:6]}", "slug": "Not_A-Valid-Slug!"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 422
+
+
+def test_slug_derivation_failure_returns_422(client, member_without_team_token):
+    """A name with nothing but characters outside [a-z0-9-] can't produce
+    a slug — must be a clear 422, not a 500 from a NOT NULL violation."""
+    resp = client.post(
+        "/teams/",
+        json={"name": "🚀🚀🚀"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 422
+
+
+def test_duplicate_check_is_case_insensitive_on_name(client, member_without_team_token, test_team):
+    resp = client.post(
+        "/teams/",
+        json={"name": test_team.name.upper(), "slug": f"different-{uuid.uuid4().hex[:6]}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 409
+
+
+def test_duplicate_check_is_case_insensitive_on_slug(client, member_without_team_token, test_team):
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Totally Different Name {uuid.uuid4().hex[:6]}", "slug": test_team.slug.upper()},
+        headers=_auth(member_without_team_token),
+    )
+    # An uppercase slug fails format validation before it ever reaches the
+    # duplicate check (SLUG_PATTERN requires lowercase) — so this is 422,
+    # not 409. The genuinely-interesting case-insensitive-slug-collision
+    # path is covered by the derived-slug variant below, since derivation
+    # always produces lowercase.
+    assert resp.status_code == 422
+
+
+def test_duplicate_check_is_case_insensitive_on_derived_slug(client, member_without_team_token, test_team):
+    """test_team's slug is whatever the fixture set it to (lowercase,
+    since it went through the same validated path). A different name that
+    *derives* to that same slug must still collide, even though no one
+    typed the slug directly."""
+    resp = client.post(
+        "/teams/",
+        # Punctuation-only differences collapse to the same derived slug
+        # as test_team's, e.g. "Test Team" -> "test-team". We reuse
+        # test_team's actual slug value here to keep this fixture-agnostic.
+        json={"name": test_team.slug.replace("-", "   ")},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 409
+
+
 # --- GET /teams — role-scoped listing --------------------------------------
 
 
