@@ -116,7 +116,21 @@ function TeamsGrid({
   isSuper: boolean
   onCreated: () => void
 }) {
+  const { user } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
+  // Only meaningful for super_admin — everyone else's `teams` prop is
+  // already scoped server-side to their own memberships (see module
+  // docstring), so there's nothing to toggle. Defaults to 'all' since
+  // that's the whole reason a super_admin's list differs from anyone
+  // else's in the first place.
+  const [scope, setScope] = useState<'all' | 'mine'>('all')
+
+  // Client-side only — GET /teams already returns every team for
+  // super_admin (routers/teams.py's list_teams()), and /auth/me already
+  // gives us this user's own membership team_ids right on AuthContext.
+  // No new endpoint or query param needed for "mine" vs "all".
+  const myTeamIds = new Set((user?.team_memberships ?? []).map((m) => m.team_id))
+  const visibleTeams = isSuper && scope === 'mine' ? teams.filter((t) => myTeamIds.has(t.id)) : teams
 
   return (
     <div>
@@ -127,26 +141,55 @@ function TeamsGrid({
             {isSuper ? 'Every team on the platform' : 'Teams you belong to'}
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
-        >
-          + Create Team
-        </button>
+        <div className="flex items-center gap-3">
+          {isSuper && (
+            <div className="flex rounded-md border border-gray-800 bg-gray-950 p-0.5 text-sm">
+              <button
+                onClick={() => setScope('mine')}
+                className={`rounded px-3 py-1 transition-colors ${
+                  scope === 'mine' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                Mine
+              </button>
+              <button
+                onClick={() => setScope('all')}
+                className={`rounded px-3 py-1 transition-colors ${
+                  scope === 'all' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                All
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
+          >
+            + Create Team
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {teams.map((t) => (
-          <Link
-            key={t.id}
-            to={`/teams/${t.id}`}
-            className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
-          >
-            <div className="font-mono text-base font-semibold text-white">{t.name}</div>
-            <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
-          </Link>
-        ))}
-      </div>
+      {isSuper && scope === 'mine' && visibleTeams.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
+          <p className="text-gray-400">You're not on any team yet.</p>
+          <p className="mt-1 text-xs text-gray-600">Switch to "All" to see every team on the platform.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {visibleTeams.map((t) => (
+            <Link
+              key={t.id}
+              to={`/teams/${t.id}`}
+              className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
+            >
+              <div className="font-mono text-base font-semibold text-white">{t.name}</div>
+              <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
+            </Link>
+          ))}
+        </div>
+      )}
 
       {showCreate && (
         <CreateTeamModal
@@ -188,7 +231,7 @@ function slugify(input: string, maxLength = 50): string {
 function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
-  // The slug field auto-follows `name` until the
+  // Shopify-handle pattern: the slug field auto-follows `name` until the
   // user types into it directly, at which point it decouples and holds
   // whatever they enter (still sanitized live) for the rest of this form.
   const [slugTouched, setSlugTouched] = useState(false)
