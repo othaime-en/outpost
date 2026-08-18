@@ -154,7 +154,13 @@ export interface TeamDetail extends Team {
 
 export interface CreateTeamBody {
   name: string
-  slug: string
+  // Optional — when omitted, the API derives it from `name` server-side
+  // (see api/app/services/slugify.py). CreateTeamModal in Teams.tsx only
+  // includes this key once the user has manually edited the slug field;
+  // until then it lets the backend be the single source of truth for
+  // what's actually persisted, rather than trusting its own live-typing
+  // preview.
+  slug?: string
 }
 
 export interface AddMemberBody {
