@@ -5,9 +5,24 @@ GitHub OAuth flow:
   1. Browser hits GET /auth/github -> redirected to GitHub's authorize page.
   2. GitHub redirects back to GET /auth/github/callback?code=...
   3. We exchange the code for a GitHub access token, fetch the GitHub profile,
-     find-or-create the local User row, mint our own JWT, and redirect the
-     browser to the frontend with the JWT in the URL *fragment*
-     (FRONTEND_URL/callback#token=...).
+     find-or-create the local User row, mint our own JWT AND a refresh token,
+     and redirect the browser to the frontend with the JWT in the URL
+     *fragment* (FRONTEND_URL/callback#token=...) while the refresh token
+     rides along as an httpOnly cookie on that same redirect response.
+
+REFRESH-TOKEN FLOW (see services/refresh_tokens.py for the full design):
+  - POST /auth/refresh reads the httpOnly cookie (never touched by JS —
+    the browser attaches it automatically), verifies + rotates it, and
+    returns a fresh short-lived JWT. Called by the frontend once on app
+    mount (silent re-login after a hard refresh) and automatically,
+    transparently, whenever an ordinary request 401s mid-session because
+    the access token expired.
+  - POST /auth/logout revokes the current refresh token server-side and
+    clears the cookie. Idempotent — succeeds even with no/garbage cookie.
+  - Neither endpoint requires get_current_user / a valid JWT — by design,
+    since the whole point of /auth/refresh is re-establishing a session
+    when the access token is ALREADY gone, and /auth/logout must still
+    work when it is too.
 
 MULTI-TEAM CHANGE — _create_jwt: the payload now carries ONLY {user_id, exp}.
 It used to also embed team_id and role, but get_current_user's JWT decode
@@ -19,10 +34,10 @@ inside the token. Worth removing anyway, for two reasons:
      zero, or more than one, team — embedding a single value would just be
      wrong on its face for those users.
   2. Even where it happened to be accurate, embedding authorization data in
-     a 24h-lived token means a role change or team removal wouldn't take
-     effect until the token expired. Authorization is resolved fresh from
-     the DB on every request instead (see middleware/auth.py, rbac.py) —
-     a super_admin demoting someone takes effect on that user's very next
+     a token means a role change or team removal wouldn't take effect until
+     the token expired. Authorization is resolved fresh from the DB on
+     every request instead (see middleware/auth.py, rbac.py) — a
+     super_admin demoting someone takes effect on that user's very next
      request, not after a token refresh.
 """
 
@@ -34,8 +49,8 @@ from typing import Optional
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from passlib.hash import bcrypt
 from sqlalchemy.orm import Session, joinedload
 
@@ -45,8 +60,9 @@ from app.middleware.auth import JWT_ALGORITHM, get_current_user
 from app.models.audit_log import AuditLog
 from app.models.team_membership import TeamMembership
 from app.models.user import User
-from app.schemas.auth import ApiKeyResponse, UserProfile
+from app.schemas.auth import ApiKeyResponse, TokenResponse, UserProfile
 from app.schemas.user import TeamMembershipOut
+from app.services import refresh_tokens
 
 router = APIRouter()
 
@@ -59,7 +75,7 @@ GITHUB_EMAILS_API = "https://api.github.com/user/emails"
 def _create_jwt(user: User) -> str:
     payload = {
         "user_id": str(user.id),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=24),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_ttl_minutes),
     }
     return jwt.encode(payload, settings.secret_key, algorithm=JWT_ALGORITHM)
 
@@ -127,7 +143,12 @@ def github_login():
 def github_callback(code: str, db: Session = Depends(get_db)):
     """
     Handle the GitHub OAuth redirect: exchange `code`, resolve/create the
-    local user, issue our JWT, and hand the browser back to the frontend.
+    local user, issue our JWT + a refresh token, and hand the browser
+    back to the frontend. The JWT travels in the redirect URL's fragment
+    (read client-side, never sent to any server — see AuthCallback.tsx);
+    the refresh token travels as an httpOnly cookie set directly on this
+    RedirectResponse, which the browser stores and silently re-attaches
+    to future POST /auth/refresh calls without any JS ever touching it.
     """
     token_resp = httpx.post(
         GITHUB_TOKEN_URL,
@@ -173,7 +194,79 @@ def github_callback(code: str, db: Session = Depends(get_db)):
     db.refresh(user)
 
     jwt_token = _create_jwt(user)
-    return RedirectResponse(f"{settings.frontend_url}/callback#token={jwt_token}")
+    raw_refresh_token = refresh_tokens.issue(db, user)
+
+    response = RedirectResponse(f"{settings.frontend_url}/callback#token={jwt_token}")
+    refresh_tokens.set_cookie(response, raw_refresh_token)
+    return response
+
+
+def _refresh_failure(detail: str) -> "JSONResponse":
+    """
+    Builds a 401 for a rejected refresh attempt AND clears the refresh
+    cookie on that SAME response object.
+
+    Deliberately NOT `response.delete_cookie(...)` on an injected
+    `Response` param followed by `raise HTTPException(...)`: FastAPI does
+    not carry over cookie/header mutations made to an injected `Response`
+    when the handler raises rather than returns normally — verified
+    directly against this FastAPI version with a throwaway TestClient
+    script rather than assumed from memory, since it's a genuinely easy
+    mistake to make silently. Returning a real Response object here
+    sidesteps the gotcha entirely: the cookie mutation and the response
+    that carries it are the same object, so there's no path where one
+    ships without the other.
+    """
+    response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": detail})
+    refresh_tokens.clear_cookie(response)
+    return response
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_access_token(request: Request, db: Session = Depends(get_db)):
+    """
+    Silently re-establishes a session from the httpOnly refresh cookie —
+    no Authorization header involved, and none required. Called by the
+    frontend once on every app mount (recovering from a hard refresh) and
+    automatically whenever an ordinary API call 401s mid-session because
+    the short-lived access token expired (see ui/src/api/client.ts).
+
+    Rotates the refresh token on every successful call — the cookie in
+    the response is NOT the same value that came in. See
+    services/refresh_tokens.py's module docstring for why, and for what
+    happens if an already-rotated-away token is presented again (reuse
+    detection: the entire session, everywhere, is revoked defensively).
+    """
+    raw_token = request.cookies.get(settings.refresh_cookie_name)
+    if not raw_token:
+        return _refresh_failure("No refresh token")
+
+    result = refresh_tokens.verify_and_rotate(db, raw_token)
+    if not result.ok:
+        # Whatever the exact reason (garbage, expired, or
+        # reused-and-now-revoked session-wide), the cookie the browser is
+        # holding is dead either way — clear it so it isn't retried
+        # forever on every future silent-refresh attempt.
+        return _refresh_failure("Invalid or expired refresh token")
+
+    response = JSONResponse(content=TokenResponse(access_token=_create_jwt(result.user)).model_dump())
+    refresh_tokens.set_cookie(response, result.raw_token)
+    return response
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """
+    Revokes the current refresh token server-side and clears the cookie.
+    Deliberately does NOT require get_current_user — a user must be able
+    to log out even if their access token already expired, and this call
+    must always succeed idempotently (already logged out elsewhere, no
+    cookie present at all, etc. are all fine, not errors).
+    """
+    raw_token = request.cookies.get(settings.refresh_cookie_name)
+    if raw_token:
+        refresh_tokens.revoke(db, raw_token)
+    refresh_tokens.clear_cookie(response)
 
 
 @router.post("/api-key", response_model=ApiKeyResponse)
