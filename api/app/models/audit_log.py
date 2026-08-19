@@ -35,8 +35,14 @@ class AuditLog(Base):
         comment=(
             "Enum-like string. Valid values: "
             "ENV_CREATED | ENV_PROVISIONING | ENV_RUNNING | "
-            "ENV_DESTROY_REQUESTED | ENV_DESTROYING | ENV_DESTROYED | ENV_FAILED | "
-            "TTL_EXTENDED | USER_ADDED | USER_ROLE_CHANGED | TEAM_CREATED | API_KEY_GENERATED"
+            "ENV_DESTROY_REQUESTED | ENV_DESTROYING | ENV_DESTROYED | ENV_CANCELLED | "
+            "ENV_FAILED | ENV_CALLBACK_IGNORED | "
+            "TTL_EXTENDED | USER_ADDED | USER_ROLE_CHANGED | "
+            "TEAM_CREATED | TEAM_DELETED | API_KEY_GENERATED. "
+            "ENV_CANCELLED and ENV_CALLBACK_IGNORED added alongside PENDING-environment "
+            "cancellation — see routers/environments.py's module docstring, "
+            "'CANCELLING A PENDING ENVIRONMENT'. TEAM_DELETED existed already but was "
+            "missing from this comment; added for accuracy, not new behavior."
         ),
     )
     actor_type = Column(
