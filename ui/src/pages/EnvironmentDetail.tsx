@@ -97,7 +97,7 @@ export default function EnvironmentDetail() {
             className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400
                        hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
           >
-            Destroy
+            {env.status === 'PENDING' ? 'Cancel' : 'Destroy'}
           </button>
         </div>
       </div>
