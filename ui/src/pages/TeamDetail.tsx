@@ -10,10 +10,6 @@ import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
 import { formatRelativeTime, shortId } from '../lib/format'
 
-// MULTI-TEAM CHANGE: 'super_admin' is no longer a valid team-scoped role at
-// all — TeamMembership.role is DB-constrained to member|team_admin on the
-// backend, and AddMemberRequest/UpdateMemberRoleRequest reject anything
-// else at the schema layer (422).
 const TEAM_ROLES: TeamRole[] = ['member', 'team_admin']
 
 export default function TeamDetail() {
@@ -258,13 +254,16 @@ export default function TeamDetail() {
           {blockingEnvironments.length > 0 ? (
             <div>
               <p className="mb-3 text-sm text-gray-400">
-                This team has {blockingEnvironments.length} environment(s) that aren't DESTROYED yet.
-                Destroy (or resolve any FAILED ones) before deleting the team:
+                This team has {blockingEnvironments.length} environment(s) that aren't DESTROYED
+                yet. Destroy running ones, resolve any FAILED ones, or cancel PENDING ones before
+                deleting the team:
               </p>
               <ul className="mb-5 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-800 bg-gray-950 p-3">
                 {blockingEnvironments.map((e) => (
                   <li key={e.id} className="flex items-center justify-between text-xs">
-                    <span className="font-mono text-gray-300">{e.name}</span>
+                    <Link to={`/environments/${e.id}`} className="truncate font-mono text-gray-300 hover:text-cyan-400">
+                      {e.name}
+                    </Link>
                     <StatusBadge status={e.status} />
                   </li>
                 ))}
