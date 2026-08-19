@@ -1,14 +1,29 @@
+/**
+ * Not wrapped in ProtectedRoute (it's the one route an unauthenticated
+ * visitor needs to reach), so it handles the bootstrap silent-refresh
+ * state itself: shows nothing conclusive while isInitializing, then
+ * redirects to "/" if that refresh actually found a valid session
+ * (someone hit /login directly while already logged in — e.g. via
+ * back/forward navigation) rather than flashing the GitHub button first.
+ */
+import { Navigate } from 'react-router-dom'
+import { useAuth } from '../hooks/useAuth'
+
 export default function Login() {
+  const { isAuthenticated, isInitializing } = useAuth()
   const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+
+  if (isInitializing) {
+    return <div className="min-h-screen bg-gray-950" />
+  }
+
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 w-96 text-center">
-        {/*
-          Geist Mono sets the small system-y eyebrow, Geist Sans carries the
-          wordmark (the one place in the app that earns a display face),
-          Inter handles the actual sentence beneath it. Everywhere else in
-          the app sticks to two faces at most.
-        */}
         <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.2em] text-cyan-500">
           Self-Service Platform
         </p>

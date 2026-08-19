@@ -102,6 +102,191 @@ def test_duplicate_team_name_or_slug_is_rejected(client, member_without_team_tok
     assert resp.status_code == 409
 
 
+def test_name_and_slug_are_reusable_after_soft_delete(client, team_admin_token, test_team, db_session):
+    """Regression test for e9c869c63ffd: a deleted team's name/slug must
+    not stay reserved forever. Delete `test_team` (no environments, so
+    delete_team()'s precondition is satisfied for free), then create a
+    brand-new team reusing its exact name and slug — this must succeed,
+    not 409."""
+    name, slug = test_team.name, test_team.slug
+
+    delete_resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert delete_resp.status_code == 200
+
+    create_resp = client.post(
+        "/teams/",
+        json={"name": name, "slug": slug},
+        headers=_auth(team_admin_token),
+    )
+    assert create_resp.status_code == 201
+    new_team_id = create_resp.json()["id"]
+    assert new_team_id != str(test_team.id)
+    db_session.track_team(Team(id=uuid.UUID(new_team_id)))
+
+
+def test_duplicate_check_ignores_soft_deleted_teams_even_with_different_creator(
+    client, team_admin_token, member_without_team_token, test_team, db_session
+):
+    """Same as above, but the re-creation is done by a totally different
+    user than the one who deleted the original team — makes sure the
+    active-only scoping isn't accidentally keyed off the actor."""
+    name, slug = test_team.name, test_team.slug
+
+    delete_resp = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert delete_resp.status_code == 200
+
+    create_resp = client.post(
+        "/teams/",
+        json={"name": name, "slug": slug},
+        headers=_auth(member_without_team_token),
+    )
+    assert create_resp.status_code == 201
+    new_team_id = create_resp.json()["id"]
+    db_session.track_team(Team(id=uuid.UUID(new_team_id)))
+
+
+def test_two_soft_deleted_teams_can_share_a_name(client, team_admin_token, test_team, second_team, db_session):
+    """Two different teams, both later soft-deleted, ending up with the
+    same name isn't just tolerated when creating one at a time (covered
+    above) — it must also not violate the partial unique index directly,
+    since both rows persist afterward with deleted_at set."""
+    shared_name = test_team.name
+
+    # Soft-delete test_team FIRST — renaming second_team to match while
+    # test_team is still active would itself violate the (correct,
+    # unrelated) active-uniqueness constraint before this test even gets
+    # to the behavior it's checking.
+    resp1 = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+    assert resp1.status_code == 200
+
+    second_team.name = shared_name
+    db_session.commit()
+
+    # second_team's team_admin is a different user than test_team's in the
+    # general case, but team_admin_token belongs to test_team specifically
+    # per the fixture — deleting second_team needs its own admin.
+    from tests.conftest import _make_user, _make_membership, _make_token  # local import: test-only helpers
+
+    admin2 = _make_user(db_session)
+    _make_membership(db_session, user_id=admin2.id, team_id=second_team.id, role="team_admin")
+    admin2_token = _make_token(admin2)
+
+    resp2 = client.delete(f"/teams/{second_team.id}", headers=_auth(admin2_token))
+    assert resp2.status_code == 200
+
+    # Both rows now share `shared_name` and both have deleted_at set — the
+    # partial index (WHERE deleted_at IS NULL) must allow this.
+    active_team = db_session.query(Team).filter(Team.name == shared_name, Team.deleted_at.is_(None)).first()
+    assert active_team is None
+
+
+# --- POST /teams — slug auto-derivation & case-insensitive uniqueness ------
+
+
+def test_slug_is_auto_generated_when_omitted(client, member_without_team_token, db_session):
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Platform Engineering {suffix}"},  # no slug key at all
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["slug"] == f"platform-engineering-{suffix}"
+    # name is stored exactly as typed — no title-casing/normalization applied
+    assert body["name"] == f"Platform Engineering {suffix}"
+
+
+def test_name_is_stored_exactly_as_typed(client, member_without_team_token, db_session):
+    """Explicit regression guard: Claude was asked NOT to normalize `name`
+    (no forced title-casing, no lowercasing) — only `slug` gets that
+    treatment. Odd but valid casing must round-trip unchanged."""
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"K8s Platform (EU) {suffix}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["name"] == f"K8s Platform (EU) {suffix}"
+    assert body["slug"] == f"k8s-platform-eu-{suffix}"
+
+
+def test_explicit_slug_overrides_derivation(client, member_without_team_token, db_session):
+    suffix = uuid.uuid4().hex[:8]
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Platform Engineering {suffix}", "slug": f"plat-eng-custom-{suffix}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    db_session.track_team(Team(id=uuid.UUID(body["id"])))
+    assert body["slug"] == f"plat-eng-custom-{suffix}"
+
+
+def test_explicit_slug_still_validated_for_format(client, member_without_team_token):
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Bad Slug Team {uuid.uuid4().hex[:6]}", "slug": "Not_A-Valid-Slug!"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 422
+
+
+def test_slug_derivation_failure_returns_422(client, member_without_team_token):
+    """A name with nothing but characters outside [a-z0-9-] can't produce
+    a slug — must be a clear 422, not a 500 from a NOT NULL violation."""
+    resp = client.post(
+        "/teams/",
+        json={"name": "🚀🚀🚀"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 422
+
+
+def test_duplicate_check_is_case_insensitive_on_name(client, member_without_team_token, test_team):
+    resp = client.post(
+        "/teams/",
+        json={"name": test_team.name.upper(), "slug": f"different-{uuid.uuid4().hex[:6]}"},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 409
+
+
+def test_duplicate_check_is_case_insensitive_on_slug(client, member_without_team_token, test_team):
+    resp = client.post(
+        "/teams/",
+        json={"name": f"Totally Different Name {uuid.uuid4().hex[:6]}", "slug": test_team.slug.upper()},
+        headers=_auth(member_without_team_token),
+    )
+    # An uppercase slug fails format validation before it ever reaches the
+    # duplicate check (SLUG_PATTERN requires lowercase) — so this is 422,
+    # not 409. The genuinely-interesting case-insensitive-slug-collision
+    # path is covered by the derived-slug variant below, since derivation
+    # always produces lowercase.
+    assert resp.status_code == 422
+
+
+def test_duplicate_check_is_case_insensitive_on_derived_slug(client, member_without_team_token, test_team):
+    """test_team's slug is whatever the fixture set it to (lowercase,
+    since it went through the same validated path). A different name that
+    *derives* to that same slug must still collide, even though no one
+    typed the slug directly."""
+    resp = client.post(
+        "/teams/",
+        # Punctuation-only differences collapse to the same derived slug
+        # as test_team's, e.g. "Test Team" -> "test-team". We reuse
+        # test_team's actual slug value here to keep this fixture-agnostic.
+        json={"name": test_team.slug.replace("-", "   ")},
+        headers=_auth(member_without_team_token),
+    )
+    assert resp.status_code == 409
+
+
 # --- GET /teams — role-scoped listing --------------------------------------
 
 

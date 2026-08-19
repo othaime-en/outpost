@@ -116,7 +116,21 @@ function TeamsGrid({
   isSuper: boolean
   onCreated: () => void
 }) {
+  const { user } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
+  // Only meaningful for super_admin — everyone else's `teams` prop is
+  // already scoped server-side to their own memberships (see module
+  // docstring), so there's nothing to toggle. Defaults to 'all' since
+  // that's the whole reason a super_admin's list differs from anyone
+  // else's in the first place.
+  const [scope, setScope] = useState<'all' | 'mine'>('all')
+
+  // Client-side only — GET /teams already returns every team for
+  // super_admin (routers/teams.py's list_teams()), and /auth/me already
+  // gives us this user's own membership team_ids right on AuthContext.
+  // No new endpoint or query param needed for "mine" vs "all".
+  const myTeamIds = new Set((user?.team_memberships ?? []).map((m) => m.team_id))
+  const visibleTeams = isSuper && scope === 'mine' ? teams.filter((t) => myTeamIds.has(t.id)) : teams
 
   return (
     <div>
@@ -127,26 +141,55 @@ function TeamsGrid({
             {isSuper ? 'Every team on the platform' : 'Teams you belong to'}
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
-        >
-          + Create Team
-        </button>
+        <div className="flex items-center gap-3">
+          {isSuper && (
+            <div className="flex rounded-md border border-gray-800 bg-gray-950 p-0.5 text-sm">
+              <button
+                onClick={() => setScope('mine')}
+                className={`rounded px-3 py-1 transition-colors ${
+                  scope === 'mine' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                Mine
+              </button>
+              <button
+                onClick={() => setScope('all')}
+                className={`rounded px-3 py-1 transition-colors ${
+                  scope === 'all' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                All
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
+          >
+            + Create Team
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {teams.map((t) => (
-          <Link
-            key={t.id}
-            to={`/teams/${t.id}`}
-            className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
-          >
-            <div className="font-mono text-base font-semibold text-white">{t.name}</div>
-            <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
-          </Link>
-        ))}
-      </div>
+      {isSuper && scope === 'mine' && visibleTeams.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
+          <p className="text-gray-400">You're not on any team yet.</p>
+          <p className="mt-1 text-xs text-gray-600">Switch to "All" to see every team on the platform.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {visibleTeams.map((t) => (
+            <Link
+              key={t.id}
+              to={`/teams/${t.id}`}
+              className="rounded-xl border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-cyan-800"
+            >
+              <div className="font-mono text-base font-semibold text-white">{t.name}</div>
+              <div className="mt-1 font-mono text-xs text-gray-500">{t.slug}</div>
+            </Link>
+          ))}
+        </div>
+      )}
 
       {showCreate && (
         <CreateTeamModal
@@ -161,18 +204,60 @@ function TeamsGrid({
   )
 }
 
+/**
+ * Mirrors api/app/services/slugify.py's generate_slug() rules exactly:
+ * lowercase, whitespace/underscores -> hyphens, strip anything else,
+ * collapse repeated hyphens, trim leading/trailing hyphens.
+ *
+ * This copy is NOT authoritative — it only drives the live preview as the
+ * user types (see CreateTeamModal below). The backend derives the real
+ * persisted slug itself whenever `slug` is omitted from the request, so a
+ * mismatch here would only ever be a cosmetic preview glitch, never a
+ * correctness bug. If slugify.py's rules ever change, update this to
+ * match or the preview will drift from what actually gets saved.
+ */
+function slugify(input: string, maxLength = 50): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLength)
+    .replace(/-+$/g, '')
+}
+
 function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
+  // Shopify-handle pattern: the slug field auto-follows `name` until the
+  // user types into it directly, at which point it decouples and holds
+  // whatever they enter (still sanitized live) for the rest of this form.
+  const [slugTouched, setSlugTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  function handleNameChange(value: string) {
+    setName(value)
+    if (!slugTouched) setSlug(slugify(value))
+  }
+
+  function handleSlugChange(value: string) {
+    setSlugTouched(true)
+    setSlug(slugify(value))
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createTeam({ name, slug })
+      // Only send `slug` once the user has actually taken the wheel.
+      // Otherwise omit it entirely and let the API derive + persist it —
+      // see the slugify() docstring above for why the client-side value
+      // isn't just sent as-is in that case.
+      await api.createTeam(slugTouched && slug ? { name, slug } : { name })
       // No manual navigation here — the parent's onCreated() re-fetches
       // listTeams(), and Teams()'s own branching logic (see module
       // docstring) naturally redirects if this was the user's first team,
@@ -191,7 +276,7 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           <label className="mb-1 block text-xs text-gray-500">Team name</label>
           <input
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => handleNameChange(e.target.value)}
             placeholder="Platform Engineering"
             className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
           />
@@ -200,10 +285,13 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           <label className="mb-1 block text-xs text-gray-500">Slug (used in AWS tags)</label>
           <input
             value={slug}
-            onChange={(e) => setSlug(e.target.value)}
+            onChange={(e) => handleSlugChange(e.target.value)}
             placeholder="platform-eng"
             className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
           />
+          <p className="mt-1 text-xs text-gray-600">
+            {slugTouched ? 'Custom slug — edit freely.' : 'Auto-generated from the name above. Click in to customize.'}
+          </p>
         </div>
         {error && <p className="text-sm text-red-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
@@ -212,7 +300,7 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </button>
           <button
             type="submit"
-            disabled={busy || !name || !slug}
+            disabled={busy || !name.trim() || (slugTouched && !slug)}
             className="rounded-md bg-cyan-500 px-4 py-1.5 text-sm font-semibold text-gray-950 hover:bg-cyan-400 disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create Team'}
@@ -221,4 +309,5 @@ function CreateTeamModal({ onClose, onCreated }: { onClose: () => void; onCreate
       </form>
     </Modal>
   )
+
 }

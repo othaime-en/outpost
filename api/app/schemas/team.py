@@ -31,12 +31,27 @@ SLUG_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 
 class CreateTeamRequest(BaseModel):
+    # `name` is stored EXACTLY as submitted — no title-casing or other
+    # normalization applied. Only `slug` is constrained to a fixed format,
+    # since it's the value that ends up in AWS resource tags and must be
+    # URL-safe; `name` is display-only and can be anything.
     name: str = Field(..., min_length=1, max_length=100)
-    slug: str = Field(..., min_length=1, max_length=50)
+
+    # Optional: when omitted, routers/teams.py's create_team() derives it
+    # from `name` via services/slugify.generate_slug(). When provided, it's
+    # used as-is (still validated for format below) — the caller has
+    # explicitly opted out of auto-derivation. See services/slugify.py's
+    # docstring for how this interacts with the frontend's live-typing
+    # preview.
+    slug: str | None = Field(default=None, max_length=50)
 
     @field_validator("slug")
     @classmethod
-    def slug_must_be_url_safe(cls, v: str) -> str:
+    def slug_must_be_url_safe(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("slug cannot be empty — omit it entirely to auto-generate one")
         if not SLUG_PATTERN.match(v):
             raise ValueError("slug must be lowercase alphanumeric with hyphens only")
         return v
