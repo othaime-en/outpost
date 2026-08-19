@@ -3,7 +3,19 @@ import { api, APIError, type Environment } from '../api/client'
 import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
 
-const DESTROYABLE = new Set(['RUNNING', 'FAILED'])
+
+const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING'])
+
+/**
+ * True for a PENDING environment specifically — the one case where
+ * "Destroy" is actually "Cancel" (nothing was ever confirmed provisioned,
+ * so there's nothing confirmed to tear down). Used to swap in different
+ * modal copy/button label/toast wording without duplicating the
+ * `status === 'PENDING'` check at each call site.
+ */
+export function isPendingCancel(env: Environment) {
+  return env.status === 'PENDING'
+}
 
 /**
  * Encapsulates the destroy/extend confirmation flow so Dashboard.tsx and
@@ -38,8 +50,20 @@ export function useEnvironmentActions(onChanged: () => void) {
     if (!destroyTarget) return
     setBusy(true)
     try {
-      await api.destroyEnvironment(destroyTarget.id)
-      setToast({ kind: 'success', message: `Destroying ${destroyTarget.name}…` })
+      const result = await api.destroyEnvironment(destroyTarget.id)
+      // Read the response back rather than assuming based on
+      // destroyTarget.status — the backend is the actual authority on
+      // whether this was an immediate cancel (status now DESTROYED) or a
+      // real async destroy (status now DESTROYING), and by the time this
+      // resolves the environment's true state could in principle have
+      // moved on regardless of what the UI last saw.
+      setToast({
+        kind: 'success',
+        message:
+          result.status === 'DESTROYED'
+            ? `Cancelled ${destroyTarget.name}`
+            : `Destroying ${destroyTarget.name}…`,
+      })
       setDestroyTarget(null)
       onChanged()
     } catch (err) {
@@ -68,10 +92,24 @@ export function useEnvironmentActions(onChanged: () => void) {
     return (
       <>
         {destroyTarget && (
-          <Modal title={`Destroy ${destroyTarget.name}?`} onClose={() => setDestroyTarget(null)}>
+          <Modal
+            title={isPendingCancel(destroyTarget) ? `Cancel ${destroyTarget.name}?` : `Destroy ${destroyTarget.name}?`}
+            onClose={() => setDestroyTarget(null)}
+          >
             <p className="mb-5 text-sm text-gray-400">
-              This tears down all AWS resources for this environment. The environment record and
-              its audit trail are kept — this cannot be undone.
+              {isPendingCancel(destroyTarget) ? (
+                <>
+                  This environment never received confirmation that any AWS resources were
+                  provisioned, so there's almost certainly nothing to tear down. It'll be marked
+                  cancelled immediately — a best-effort teardown request is still sent in the rare
+                  case provisioning had silently started. This cannot be undone.
+                </>
+              ) : (
+                <>
+                  This tears down all AWS resources for this environment. The environment record
+                  and its audit trail are kept — this cannot be undone.
+                </>
+              )}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -85,7 +123,13 @@ export function useEnvironmentActions(onChanged: () => void) {
                 disabled={busy}
                 className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {busy ? 'Destroying…' : 'Destroy'}
+                {busy
+                  ? isPendingCancel(destroyTarget)
+                    ? 'Cancelling…'
+                    : 'Destroying…'
+                  : isPendingCancel(destroyTarget)
+                    ? 'Cancel Environment'
+                    : 'Destroy'}
               </button>
             </div>
           </Modal>
