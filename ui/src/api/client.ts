@@ -3,12 +3,19 @@
  *
  * Every request goes through here so that:
  *   - the Bearer token is attached consistently
+ *   - a 401 caused by the (short-lived) access token expiring mid-session
+ *     is silently recovered from — see request()'s comment below
  *   - API errors are normalized into a single shape the UI can render
  *
- * The token is set explicitly via setToken() — it's never read from
- * localStorage. It lives only in this module's private field plus
- * AuthContext's React state, both of which are wiped on a full page reload.
- * That's intentional (see hooks/useAuth.tsx).
+ * The access token is set explicitly via setToken() — it's never read from
+ * localStorage, and it still lives only in this module's private field plus
+ * AuthContext's React state, both wiped on a full page reload. THAT part of
+ * the design is unchanged. What's new is a SEPARATE, longer-lived refresh
+ * token that the browser holds in an httpOnly cookie — invisible to this
+ * code (and to any other JS) — which AuthContext uses once on app mount to
+ * silently re-establish a session after a hard refresh, instead of forcing
+ * a full GitHub re-login every time. See api/app/services/refresh_tokens.py
+ * for the full design rationale.
  */
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -57,6 +64,12 @@ export interface TeamMember {
 export interface ApiKeyResponse {
   api_key: string
   note: string
+}
+
+/** Response shape of POST /auth/refresh — mirrors api/app/schemas/auth.py's TokenResponse. */
+export interface TokenResponse {
+  access_token: string
+  token_type: string
 }
 
 export interface Environment {
@@ -208,12 +221,79 @@ export class APIError extends Error {
 
 class APIClient {
   private token: string | null = null
+  // Single in-flight refresh promise shared by every concurrent caller.
+  // Necessary, not just an optimization: the refresh token ROTATES on
+  // every use (api/app/services/refresh_tokens.py), so if two requests
+  // 401 around the same moment and each fired its own /auth/refresh call,
+  // the second one would look like reuse of an already-rotated-away
+  // token and the backend would defensively kill the ENTIRE session. This
+  // makes that structurally impossible on the frontend side.
+  private refreshInFlight: Promise<TokenResponse> | null = null
+  // Set once by AuthProvider on mount. Invoked when a background
+  // refresh-and-retry ultimately fails, so AuthContext's React state gets
+  // cleared — without this, AuthContext would keep believing the user is
+  // logged in (stale `token`/`user` state) even after the API has started
+  // rejecting every request.
+  private onUnauthorized: (() => void) | null = null
 
   setToken(token: string | null) {
     this.token = token
   }
 
-  private async request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  getToken(): string | null {
+    return this.token
+  }
+
+  setUnauthorizedHandler(fn: (() => void) | null) {
+    this.onUnauthorized = fn
+  }
+
+  /**
+   * Hits POST /auth/refresh. The httpOnly refresh cookie is attached by
+   * the browser automatically via `credentials: 'include'` below — this
+   * code never reads or touches it, only relies on it being there.
+   * Deduplicated: see refreshInFlight's comment above.
+   */
+  private refreshAccessToken(): Promise<TokenResponse> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+        .then(async (resp) => {
+          if (!resp.ok) {
+            throw new APIError(resp.status, 'Refresh failed')
+          }
+          const body: TokenResponse = await resp.json()
+          this.token = body.access_token
+          return body
+        })
+        .finally(() => {
+          this.refreshInFlight = null
+        })
+    }
+    return this.refreshInFlight
+  }
+
+  /**
+   * Explicit refresh — used once by AuthProvider on app mount to silently
+   * re-establish a session from the httpOnly cookie after a hard refresh.
+   * Rejects with APIError(401) if there's no valid refresh cookie (never
+   * logged in, or the session genuinely ended) — callers should treat
+   * that as "not logged in," not as an unexpected failure.
+   */
+  refresh = () => this.refreshAccessToken()
+
+  /**
+   * Revokes the refresh token server-side and clears the cookie. Always
+   * call this (best-effort — see hooks/useAuth.tsx's logout()) even if
+   * the local React state is about to be cleared regardless; otherwise
+   * the refresh cookie sitting in the browser would remain valid for its
+   * full TTL after the user thought they'd logged out.
+   */
+  logout = () => this.request<void>('/auth/logout', { method: 'POST' })
+
+  private async request<T>(path: string, opts: RequestInit = {}, isRetry = false): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(opts.headers as Record<string, string> | undefined),
@@ -222,7 +302,28 @@ class APIClient {
       headers['Authorization'] = `Bearer ${this.token}`
     }
 
-    const resp = await fetch(`${API_BASE}${path}`, { ...opts, headers })
+    const resp = await fetch(`${API_BASE}${path}`, { ...opts, headers, credentials: 'include' })
+
+    // A 401 on an ordinary request most likely means the short-lived
+    // access token expired mid-session (by design — see config.py's
+    // access_token_ttl_minutes, 15 minutes by default). Silently refresh
+    // once and retry, rather than surfacing an error the user did
+    // nothing to cause. `path !== '/auth/refresh'` prevents recursing
+    // into itself; `!isRetry` caps this at exactly one retry attempt.
+    if (resp.status === 401 && !isRetry && path !== '/auth/refresh') {
+      try {
+        await this.refreshAccessToken()
+        return this.request<T>(path, opts, true)
+      } catch {
+        // Refresh itself failed — the session is genuinely over (cookie
+        // expired, revoked, or never existed). Clear the dead access
+        // token and tell AuthContext so it can redirect to /login, then
+        // fall through to the normal error handling below using the
+        // ORIGINAL (still-unread) response.
+        this.token = null
+        this.onUnauthorized?.()
+      }
+    }
 
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
