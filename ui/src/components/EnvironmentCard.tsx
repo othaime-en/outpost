@@ -6,7 +6,10 @@ import CostBadge from './CostBadge'
 import TTLCountdown from './TTLCountdown'
 import { formatRelativeTime, shortId } from '../lib/format'
 
-const DESTROYABLE = new Set(['RUNNING', 'FAILED'])
+// Kept in sync with useEnvironmentActions.tsx's identical set — see that
+// file's comment on DESTROYABLE for why PENDING is included (cancelling a
+// stuck PENDING environment, not a real destroy).
+const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING'])
 
 interface EnvironmentCardProps {
   env: Environment
@@ -73,7 +76,7 @@ export default function EnvironmentCard({ env, onDestroy, onExtend }: Environmen
           className="flex-1 rounded-md border border-red-900 px-2 py-1.5 text-xs font-semibold text-red-400
                      hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
         >
-          Destroy
+          {env.status === 'PENDING' ? 'Cancel' : 'Destroy'}
         </button>
         <button
           onClick={() => onExtend(env)}
