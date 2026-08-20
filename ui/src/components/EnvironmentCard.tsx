@@ -22,13 +22,13 @@ export default function EnvironmentCard({ env, onDestroy, onExtend }: Environmen
   const canExtend = env.status === 'RUNNING'
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
+    <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <HealthIndicator status={env.health_status} />
           <Link
             to={`/environments/${env.id}`}
-            className="truncate font-mono text-base font-semibold text-white hover:text-cyan-400"
+            className="truncate font-mono text-base font-semibold text-gray-900 hover:text-cyan-600 dark:text-white dark:hover:text-cyan-400"
             title={env.name}
           >
             {env.name}
@@ -37,59 +37,59 @@ export default function EnvironmentCard({ env, onDestroy, onExtend }: Environmen
         <StatusBadge status={env.status} />
       </div>
 
-      <div className="flex items-center gap-2 text-xs text-gray-500">
-        <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono uppercase tracking-wide">
+      <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-500">
+        <span className="rounded bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 font-mono uppercase tracking-wide">
           {env.env_type}
         </span>
         <span className="font-mono">{env.team_slug}</span>
-        <span title={env.id} className="font-mono text-gray-600">
+        <span title={env.id} className="font-mono text-gray-400 dark:text-gray-600">
           {shortId(env.id)}
         </span>
       </div>
 
       <div className="flex items-center justify-between text-sm">
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-gray-500">
+          <span className="text-xs text-gray-500 dark:text-gray-500">
             {env.status === 'DESTROYED' ? 'destroyed' : 'expires in'}
           </span>
           {env.status === 'DESTROYED' ? (
-            <span className="font-mono text-sm text-gray-500">—</span>
+            <span className="font-mono text-sm text-gray-500 dark:text-gray-500">—</span>
           ) : (
             <TTLCountdown expiresAt={env.expires_at} />
           )}
         </div>
         <div className="flex flex-col items-end gap-0.5">
-          <span className="text-xs text-gray-500">est. cost</span>
+          <span className="text-xs text-gray-500 dark:text-gray-500">est. cost</span>
           <CostBadge costUsd={env.cost_estimate_usd} />
         </div>
       </div>
 
-      <div className="text-xs text-gray-600">
-        Created by <span className="text-gray-400">@{env.created_by_username}</span> ·{' '}
+      <div className="text-xs text-gray-500 dark:text-gray-600">
+        Created by <span className="text-gray-600 dark:text-gray-400">@{env.created_by_username}</span> ·{' '}
         {formatRelativeTime(env.created_at)}
       </div>
 
-      <div className="mt-1 flex items-center gap-2 border-t border-gray-800 pt-3">
+      <div className="mt-1 flex items-center gap-2 border-t border-gray-200 dark:border-gray-800 pt-3">
         <button
           onClick={() => onDestroy(env)}
           disabled={!canDestroy}
-          className="flex-1 rounded-md border border-red-900 px-2 py-1.5 text-xs font-semibold text-red-400
-                     hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+          className="flex-1 rounded-md border border-red-300 dark:border-red-900 px-2 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400
+                     hover:bg-red-50 dark:hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
         >
           {env.status === 'PENDING' ? 'Cancel' : 'Destroy'}
         </button>
         <button
           onClick={() => onExtend(env)}
           disabled={!canExtend}
-          className="flex-1 rounded-md border border-amber-900 px-2 py-1.5 text-xs font-semibold text-amber-400
-                     hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+          className="flex-1 rounded-md border border-amber-300 dark:border-amber-900 px-2 py-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400
+                     hover:bg-amber-50 dark:hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
         >
           Extend TTL
         </button>
         <Link
           to={`/environments/${env.id}`}
-          className="flex-1 rounded-md border border-cyan-900 px-2 py-1.5 text-center text-xs font-semibold text-cyan-400
-                     hover:bg-cyan-950"
+          className="flex-1 rounded-md border border-cyan-300 dark:border-cyan-900 px-2 py-1.5 text-center text-xs font-semibold text-cyan-600 dark:text-cyan-400
+                     hover:bg-cyan-50 dark:hover:bg-cyan-950"
         >
           Details
         </Link>
