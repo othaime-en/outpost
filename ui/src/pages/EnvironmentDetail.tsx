@@ -103,7 +103,18 @@ export default function EnvironmentDetail() {
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Stat label="Team" value={env.team_slug} mono />
+        <Stat
+          label="Team"
+          node={
+            <Link
+              to={`/teams/${env.team_id}`}
+              className="block truncate font-mono text-sm text-cyan-400 hover:underline"
+              title={env.team_slug}
+            >
+              {env.team_slug}
+            </Link>
+          }
+        />
         <Stat label="Region" value={env.aws_region} mono />
         <Stat
           label="Expires"
