@@ -25,8 +25,8 @@ interface EnvironmentFilterBarProps {
 function chipClass(active: boolean) {
   return `rounded-md border px-2.5 py-1 text-xs font-mono transition-colors ${
     active
-      ? 'border-cyan-700 bg-cyan-950 text-cyan-300'
-      : 'border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200'
+      ? 'border-cyan-300 bg-cyan-50 text-cyan-700 dark:border-cyan-700 dark:bg-cyan-950 dark:text-cyan-300'
+      : 'border-gray-200 text-gray-600 hover:border-gray-300 hover:text-gray-900 dark:border-gray-800 dark:text-gray-400 dark:hover:border-gray-700 dark:hover:text-gray-200'
   }`
 }
 
@@ -61,10 +61,10 @@ export default function EnvironmentFilterBar({
     !!filters.teamId
 
   return (
-    <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-gray-800 bg-gray-900/60 p-4">
+    <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900/60 p-4">
       {/* Status chips */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="mr-1 text-xs text-gray-500">Status</span>
+        <span className="mr-1 text-xs text-gray-500 dark:text-gray-500">Status</span>
         {STATUS_OPTIONS.map((s) => (
           <button key={s} onClick={() => toggleStatus(s)} className={chipClass(statuses.includes(s))}>
             {s}
@@ -74,7 +74,7 @@ export default function EnvironmentFilterBar({
 
       {/* Env type chips */}
       <div className="flex items-center gap-1.5">
-        <span className="mr-1 text-xs text-gray-500">Type</span>
+        <span className="mr-1 text-xs text-gray-500 dark:text-gray-500">Type</span>
         {(['dev', 'staging'] as EnvType[]).map((t) => (
           <button key={t} onClick={() => toggleEnvType(t)} className={chipClass(filters.envType === t)}>
             {t}
@@ -84,13 +84,13 @@ export default function EnvironmentFilterBar({
 
       {/* Health dropdown */}
       <div className="flex items-center gap-1.5">
-        <span className="text-xs text-gray-500">Health</span>
+        <span className="text-xs text-gray-500 dark:text-gray-500">Health</span>
         <select
           value={filters.healthStatus ?? ''}
           onChange={(e) =>
             onChange({ ...filters, healthStatus: (e.target.value || undefined) as HealthStatus | undefined })
           }
-          className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none"
+          className="rounded-md border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 focus:border-cyan-600 focus:outline-none"
         >
           <option value="">Any</option>
           <option value="HEALTHY">Healthy</option>
@@ -101,7 +101,7 @@ export default function EnvironmentFilterBar({
 
       {/* Expiry quick filters */}
       <div className="flex items-center gap-1.5">
-        <span className="mr-1 text-xs text-gray-500">Expires</span>
+        <span className="mr-1 text-xs text-gray-500 dark:text-gray-500">Expires</span>
         {EXPIRY_OPTIONS.map((opt) => (
           <button
             key={opt.label}
@@ -117,11 +117,11 @@ export default function EnvironmentFilterBar({
           Dashboard.tsx's showTeamFilter for the multi-team migration note) */}
       {showTeamFilter && (
         <div className="flex items-center gap-1.5">
-          <span className="text-xs text-gray-500">Team</span>
+          <span className="text-xs text-gray-500 dark:text-gray-500">Team</span>
           <select
             value={filters.teamId ?? ''}
             onChange={(e) => onChange({ ...filters, teamId: e.target.value || undefined })}
-            className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none"
+            className="rounded-md border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 focus:border-cyan-600 focus:outline-none"
           >
             <option value="">All teams</option>
             {teams.map((t) => (
@@ -135,22 +135,22 @@ export default function EnvironmentFilterBar({
 
       <div className="ml-auto flex items-center gap-4">
         {/* Toggles */}
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-400">
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
           <input
             type="checkbox"
             checked={!!filters.createdByMe}
             onChange={(e) => onChange({ ...filters, createdByMe: e.target.checked || undefined })}
-            className="rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-600"
+            className="rounded border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-950 text-cyan-600 dark:text-cyan-500 focus:ring-cyan-600"
           />
           Created by me
         </label>
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-400">
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
           <input
             type="checkbox"
             checked={!!filters.includeDestroyed}
             disabled={statuses.length > 0}
             onChange={(e) => onChange({ ...filters, includeDestroyed: e.target.checked || undefined })}
-            className="rounded border-gray-700 bg-gray-950 text-cyan-500 focus:ring-cyan-600 disabled:opacity-40"
+            className="rounded border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-950 text-cyan-600 dark:text-cyan-500 focus:ring-cyan-600 disabled:opacity-40"
           />
           Show destroyed
         </label>
@@ -162,7 +162,7 @@ export default function EnvironmentFilterBar({
             const opt = SORT_OPTIONS.find((o) => o.label === e.target.value)
             if (opt) onChange({ ...filters, sortBy: opt.sortBy, sortDir: opt.sortDir })
           }}
-          className="rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-300 focus:border-cyan-600 focus:outline-none"
+          className="rounded-md border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 focus:border-cyan-600 focus:outline-none"
         >
           {SORT_OPTIONS.map((o) => (
             <option key={o.label} value={o.label}>
@@ -172,7 +172,7 @@ export default function EnvironmentFilterBar({
         </select>
 
         {hasNonDefaultFilters && (
-          <button onClick={() => onChange({})} className="text-xs text-gray-500 underline hover:text-gray-300">
+          <button onClick={() => onChange({})} className="text-xs text-gray-500 underline hover:text-gray-700 dark:hover:text-gray-300">
             Clear filters
           </button>
         )}
