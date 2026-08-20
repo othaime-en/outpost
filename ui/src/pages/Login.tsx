@@ -14,7 +14,7 @@ export default function Login() {
   const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
   if (isInitializing) {
-    return <div className="min-h-screen bg-gray-950" />
+    return <div className="min-h-screen bg-white dark:bg-gray-950" />
   }
 
   if (isAuthenticated) {
@@ -22,15 +22,15 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 w-96 text-center">
-        <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.2em] text-cyan-500">
+    <div className="min-h-screen bg-white dark:bg-gray-950 flex items-center justify-center">
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-8 w-96 text-center shadow-sm dark:shadow-none">
+        <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.2em] text-cyan-600 dark:text-cyan-500">
           Self-Service Platform
         </p>
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-white mb-2">
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white mb-2">
           IDP Lite
         </h1>
-        <p className="text-gray-400 mb-8 text-sm">Provision cloud environments on demand</p>
+        <p className="text-gray-600 dark:text-gray-400 mb-8 text-sm">Provision cloud environments on demand</p>
         {/*
           This anchor tag is intentional — it's a full page navigation, not a React Router link.
           We're leaving the browser to go to the FastAPI GitHub OAuth redirect endpoint.
@@ -39,8 +39,8 @@ export default function Login() {
         */}
         <a
           href={`${apiUrl}/auth/github`}
-          className="flex items-center justify-center gap-3 bg-white text-gray-900
-                     font-semibold px-6 py-3 rounded-lg hover:bg-gray-100 transition-colors"
+          className="flex items-center justify-center gap-3 bg-gray-900 text-white dark:bg-white dark:text-gray-900
+                     font-semibold px-6 py-3 rounded-lg hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors"
         >
           {/* GitHub SVG icon */}
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
