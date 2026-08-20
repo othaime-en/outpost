@@ -97,13 +97,24 @@ export default function EnvironmentDetail() {
             className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400
                        hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
           >
-            Destroy
+            {env.status === 'PENDING' ? 'Cancel' : 'Destroy'}
           </button>
         </div>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Stat label="Team" value={env.team_slug} mono />
+        <Stat
+          label="Team"
+          node={
+            <Link
+              to={`/teams/${env.team_id}`}
+              className="block truncate font-mono text-sm text-cyan-400 hover:underline"
+              title={env.team_slug}
+            >
+              {env.team_slug}
+            </Link>
+          }
+        />
         <Stat label="Region" value={env.aws_region} mono />
         <Stat
           label="Expires"

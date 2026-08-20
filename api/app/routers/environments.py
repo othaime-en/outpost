@@ -55,6 +55,56 @@ MULTI-TEAM MEMBERSHIP MIGRATION — what changed in this file and why.
     middleware/rbac.py's docstring), so those Depends() now call
     get_current_user directly. Real authorization is, as before, the
     explicit team_role()/has_team_role() checks in each handler body.
+
+CANCELLING A PENDING ENVIRONMENT — deviation from the original plan,
+documented per project convention.
+
+The plan's state machine only ever allowed DELETE /{env_id} to fire from
+RUNNING or FAILED (DESTROYABLE_STATUSES). PENDING had no exit at all: a
+row that never received a callback (GitHub Actions secrets unset, a
+workflow that silently no-ops, a dispatch that never started) was stuck
+forever — which, in turn, permanently blocked deleting whatever team it
+belonged to (delete_team() in routers/teams.py requires every environment
+to reach DESTROYED first).
+
+PENDING is now also acceptable to DELETE /{env_id} (CANCELLABLE_STATUSES),
+but it is NOT treated like RUNNING/FAILED destruction — a PENDING row has
+no confirmation either way that any AWS resource actually exists, so the
+two paths differ in an important way:
+
+  - RUNNING/FAILED -> DESTROYING, wait for GitHub Actions to confirm via
+    /callback before reaching DESTROYED. There's real infrastructure to
+    tear down and the DB shouldn't claim it's gone until that's confirmed.
+
+  - PENDING -> DESTROYED immediately, no waiting on a callback. Making
+    this wait on DESTROYING the same way would just trade "stuck at
+    PENDING forever" for "stuck at DESTROYING forever" in exactly the
+    same unconfigured-GitHub-Actions environments where this problem is
+    most likely to bite — defeating the entire point of the fix.
+
+    A best-effort terraform.trigger_destroy() is still fired regardless
+    (fire-and-forget, after the commit, not blocking the response) as
+    insurance against the narrow race where a provision workflow was
+    silently mid-flight when cancellation happened — `terraform destroy`
+    against a never-applied workspace is a well-defined no-op, so this
+    costs nothing in the overwhelmingly common case where nothing was
+    ever created.
+
+    The DB status ends up "DESTROYED" either way (so team deletion,
+    dashboard filters, and status badges need zero special-casing to
+    handle this) — but the audit action is "ENV_CANCELLED", not
+    "ENV_DESTROYED", with `confirmed_teardown: False` in its metadata.
+    "ENV_DESTROYED" means GitHub Actions confirmed teardown; reusing it
+    here for a state that was never confirmed would be dishonest in the
+    audit trail.
+
+  - environment_callback() now no-ops (logs ENV_CALLBACK_IGNORED, doesn't
+    mutate state) for any callback landing on an already-DESTROYED
+    environment — needed because of the above: a destroy/provision
+    workflow dispatched before or during cancellation can still report
+    back long after the row is already closed, and silently overwriting
+    DESTROYED back to RUNNING or FAILED would resurrect something the
+    caller explicitly closed out from under them.
 """
 
 from __future__ import annotations
@@ -63,7 +113,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -95,8 +145,16 @@ from app.services import runbook as runbook_service
 
 router = APIRouter()
 
-# Terminal-ish statuses a destroy can be triggered from.
+# Terminal-ish statuses a real destroy (RUNNING/FAILED -> DESTROYING ->
+# callback -> DESTROYED) can be triggered from.
 DESTROYABLE_STATUSES = ("RUNNING", "FAILED")
+
+# PENDING can also be closed via DELETE /{env_id}, but goes straight to
+# DESTROYED with no DESTROYING wait — see this module's docstring, section
+# "CANCELLING A PENDING ENVIRONMENT", for why this is a deliberately
+# different path from DESTROYABLE_STATUSES rather than just being added to
+# that tuple.
+CANCELLABLE_STATUSES = ("PENDING",)
 
 # All valid values for the environment state machine. Used to validate the
 # `status` filter query param — anything outside this set is a client error,
@@ -390,18 +448,20 @@ def get_environment(
 @router.delete("/{env_id}", response_model=CreateEnvironmentResponse, status_code=status.HTTP_202_ACCEPTED)
 def destroy_environment(
     env_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     env = _get_env_or_404(db, env_id)
 
-    if env.status not in DESTROYABLE_STATUSES:
+    if env.status not in DESTROYABLE_STATUSES and env.status not in CANCELLABLE_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot destroy environment with status: {env.status}",
         )
 
-    # RBAC, scoped to THIS environment's team specifically:
+    # RBAC, scoped to THIS environment's team specifically — identical for
+    # both the real-destroy and cancel-a-PENDING paths below:
     #   no membership on this team (and not super_admin) -> can't act at all
     #   member on this team                               -> own envs only
     #   team_admin on this team / super_admin              -> any env on the team
@@ -412,6 +472,40 @@ def destroy_environment(
         raise HTTPException(status_code=403, detail="You are not a member of this environment's team")
     if role == "member" and str(env.created_by) != str(current_user.id) and not is_super:
         raise HTTPException(status_code=403, detail="You can only destroy your own environments")
+
+    if env.status in CANCELLABLE_STATUSES:
+        # See this module's docstring, "CANCELLING A PENDING ENVIRONMENT" —
+        # goes straight to DESTROYED, no DESTROYING wait, distinct audit
+        # action from a confirmed destroy.
+        env.status = "DESTROYED"
+        env.destroyed_at = datetime.now(timezone.utc)
+        _audit(
+            db,
+            action="ENV_CANCELLED",
+            environment_id=env.id,
+            actor_id=current_user.id,
+            metadata={
+                "triggered_by": current_user.username,
+                "cancelled_from_status": "PENDING",
+                "confirmed_teardown": False,
+            },
+        )
+        db.commit()
+
+        # Best-effort insurance only — fired after the commit (same
+        # ordering as create_environment()'s dispatch) and deliberately
+        # not awaited or allowed to affect the response: this environment
+        # is already DESTROYED locally no matter what this call does. See
+        # the module docstring for why waiting on it here would just trade
+        # one stuck status for another in exactly the environments where
+        # this problem is most likely to occur.
+        terraform.trigger_destroy(str(env.id), env.aws_region, actor=current_user.username)
+
+        # 200, not the decorator's default 202 — there's no pending async
+        # work left; the environment is already in its terminal state by
+        # the time this response goes out.
+        response.status_code = status.HTTP_200_OK
+        return CreateEnvironmentResponse(env_id=str(env.id), status="DESTROYED")
 
     env.status = "DESTROYING"
     _audit(
@@ -472,6 +566,26 @@ def environment_callback(
     _=Depends(require_callback_secret),
 ):
     env = _get_env_or_404(db, env_id)
+
+    if env.status == "DESTROYED":
+        # A callback landing after the environment is already DESTROYED —
+        # most likely a provision or destroy workflow that was dispatched
+        # before or during a PENDING cancellation (see this module's
+        # docstring, "CANCELLING A PENDING ENVIRONMENT") finally reporting
+        # back, possibly minutes or hours later. DESTROYED is terminal:
+        # silently overwriting it back to RUNNING or FAILED would
+        # resurrect an environment the caller explicitly closed out from
+        # under them. Log it and no-op rather than mutate state.
+        _audit(
+            db,
+            action="ENV_CALLBACK_IGNORED",
+            environment_id=env.id,
+            actor_type="system",
+            metadata={"attempted_status": body.status, "reason": "environment already DESTROYED"},
+        )
+        db.commit()
+        return {"ok": True, "ignored": True}
+
     env.status = body.status
 
     if body.status == "RUNNING":

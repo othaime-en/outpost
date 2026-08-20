@@ -371,12 +371,147 @@ class TestDestroyEnvironment:
     def test_requires_auth(self, client: TestClient):
         assert client.delete(f"/environments/{uuid.uuid4()}").status_code == 401
 
-    def test_cannot_destroy_pending_environment(
-        self, client: TestClient, member_user, member_token, test_team, make_environment,
+    def test_cancelling_pending_environment_succeeds_immediately(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
     ):
+        """Regression test for the original bug this feature fixes: a
+        PENDING environment (never confirmed provisioned OR destroyed —
+        see routers/environments.py's 'CANCELLING A PENDING ENVIRONMENT')
+        used to have no exit at all. It must now go straight to DESTROYED,
+        not DESTROYING — waiting on a callback here would just trade one
+        stuck status for another in exactly the unconfigured-GitHub-Actions
+        setups where this is most likely to happen."""
         env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
         response = client.delete(f"/environments/{env.id}", headers=_auth(member_token))
-        assert response.status_code == 400
+
+        assert response.status_code == 200  # not 202 — nothing async is pending
+        assert response.json()["status"] == "DESTROYED"
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYED"
+        assert env.destroyed_at is not None
+
+    def test_cancelling_pending_environment_fires_best_effort_destroy_dispatch(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform,
+    ):
+        """The best-effort terraform.trigger_destroy() insurance call
+        described in the module docstring — must still fire even though
+        the DB doesn't wait on it."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
+        client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+        assert len(mock_terraform["destroy"]) == 1
+
+    def test_cancelling_pending_environment_logs_env_cancelled_not_env_destroyed(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
+        client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+
+        cancelled_audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_CANCELLED")
+            .first()
+        )
+        assert cancelled_audit is not None
+        assert cancelled_audit.event_metadata["confirmed_teardown"] is False
+
+        destroyed_audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_DESTROYED")
+            .first()
+        )
+        assert destroyed_audit is None  # never confirmed — must not claim otherwise
+
+    def test_member_can_cancel_own_pending_environment_but_not_teammates(
+        self, client: TestClient, member_user, member_token, team_admin_user, test_team,
+        make_environment, mock_terraform,
+    ):
+        own_env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
+        teammates_env = make_environment(team_id=test_team.id, created_by=team_admin_user.id, status="PENDING")
+
+        assert client.delete(f"/environments/{own_env.id}", headers=_auth(member_token)).status_code == 200
+        assert client.delete(f"/environments/{teammates_env.id}", headers=_auth(member_token)).status_code == 403
+
+    def test_cancelling_pending_environment_unblocks_team_deletion(
+        self, client: TestClient, team_admin_token, team_admin_user, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        """End-to-end regression test for the actual reported problem: a
+        team with a stuck PENDING environment could never be deleted."""
+        env = make_environment(team_id=test_team.id, created_by=team_admin_user.id, status="PENDING")
+
+        blocked = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+        assert blocked.status_code == 400
+
+        cancel = client.delete(f"/environments/{env.id}", headers=_auth(team_admin_token))
+        assert cancel.status_code == 200
+
+        unblocked = client.delete(f"/teams/{test_team.id}", headers=_auth(team_admin_token))
+        assert unblocked.status_code == 200
+
+    def test_late_callback_after_pending_cancellation_is_ignored(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        """A provision workflow dispatched before cancellation reports
+        back (e.g. RUNNING) long after the row was already closed. Must
+        NOT resurrect the environment — see 'CANCELLING A PENDING
+        ENVIRONMENT' in the module docstring."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
+        client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+        db_session.refresh(env)
+        assert env.status == "DESTROYED"
+
+        late_callback = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "RUNNING", "outputs": {"ecs_service_arn": "arn:aws:ecs:fake"}},
+            headers={"X-Callback-Secret": settings.callback_secret},
+        )
+        assert late_callback.status_code == 200
+        assert late_callback.json()["ignored"] is True
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYED"  # unchanged — not resurrected
+
+        ignored_audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_CALLBACK_IGNORED")
+            .first()
+        )
+        assert ignored_audit is not None
+        assert ignored_audit.event_metadata["attempted_status"] == "RUNNING"
+
+    def test_late_callback_after_normal_destroy_is_also_ignored(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        """The DESTROYED guard in the callback handler isn't specific to
+        cancelled-from-PENDING environments — any already-DESTROYED
+        environment must reject a late callback the same way, including
+        the normal RUNNING -> DESTROYING -> DESTROYED path."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="DESTROYING")
+
+        first_callback = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "DESTROYED", "actor": member_user.username},
+            headers={"X-Callback-Secret": settings.callback_secret},
+        )
+        assert first_callback.status_code == 200
+        assert "ignored" not in first_callback.json()
+
+        second_callback = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "FAILED", "error": "duplicate delivery"},
+            headers={"X-Callback-Secret": settings.callback_secret},
+        )
+        assert second_callback.status_code == 200
+        assert second_callback.json()["ignored"] is True
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYED"
 
     def test_member_can_destroy_own_environment(
         self, client: TestClient, member_user, member_token, test_team,
