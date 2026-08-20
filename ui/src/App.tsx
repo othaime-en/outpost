@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './hooks/useAuth'
+import { ThemeProvider } from './hooks/useTheme'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/AppShell'
 import AuthCallback from './pages/AuthCallback'
@@ -25,9 +26,12 @@ function Protected({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     /*
-     * AuthProvider wraps everything so any component can call useAuth() to get
-     * the current user without needing to pass it down through props.
+     * ThemeProvider sits outermost since theme applies even when logged
+     * out (e.g. the Login page). AuthProvider wraps the rest so any
+     * component can call useAuth() to get the current user without
+     * needing to pass it down through props.
      */
+    <ThemeProvider>
     <AuthProvider>
       <BrowserRouter>
         <Routes>
@@ -93,5 +97,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </AuthProvider>
+    </ThemeProvider>
   )
 }
