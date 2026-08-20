@@ -23,7 +23,11 @@ export default function TTLCountdown({ expiresAt }: { expiresAt: string }) {
   }, [expiresAt])
 
   return (
-    <span className={`font-mono text-sm ${expired ? 'text-red-400' : 'text-amber-400'}`}>
+    <span
+      className={`font-mono text-sm ${
+        expired ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'
+      }`}
+    >
       {label}
     </span>
   )
