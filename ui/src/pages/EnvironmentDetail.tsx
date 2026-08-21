@@ -54,8 +54,8 @@ export default function EnvironmentDetail() {
   if (notFound) {
     return (
       <div className="text-center py-16">
-        <p className="mb-4 text-gray-400">Environment not found.</p>
-        <Link to="/" className="text-cyan-400 hover:underline text-sm">
+        <p className="mb-4 text-gray-600 dark:text-gray-400">Environment not found.</p>
+        <Link to="/" className="text-cyan-600 dark:text-cyan-400 hover:underline text-sm">
           ← Back to dashboard
         </Link>
       </div>
@@ -63,39 +63,39 @@ export default function EnvironmentDetail() {
   }
 
   if (!env) {
-    return <p className="text-sm text-gray-500">Loading…</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-500">Loading…</p>
   }
 
   return (
     <div>
       <button
         onClick={() => navigate('/')}
-        className="mb-4 text-xs text-gray-500 hover:text-gray-300"
+        className="mb-4 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300"
       >
         ← Back to dashboard
       </button>
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <HealthIndicator status={env.health_status} />
-        <h1 className="font-mono text-2xl font-semibold text-white">{env.name}</h1>
+        <h1 className="font-mono text-2xl font-semibold text-gray-900 dark:text-white">{env.name}</h1>
         <StatusBadge status={env.status} />
-        <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs font-mono uppercase text-gray-400">
+        <span className="rounded bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 text-xs font-mono uppercase text-gray-600 dark:text-gray-400">
           {env.env_type}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => actions.promptExtend(env)}
             disabled={!actions.canExtend(env)}
-            className="rounded-md border border-amber-900 px-3 py-1.5 text-xs font-semibold text-amber-400
-                       hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+            className="rounded-md border border-amber-300 dark:border-amber-900 px-3 py-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400
+                       hover:bg-amber-50 dark:hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
           >
             Extend TTL
           </button>
           <button
             onClick={() => actions.promptDestroy(env)}
             disabled={!actions.canDestroy(env)}
-            className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400
-                       hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-700"
+            className="rounded-md border border-red-300 dark:border-red-900 px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400
+                       hover:bg-red-50 dark:hover:bg-red-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
           >
             {env.status === 'PENDING' ? 'Cancel' : 'Destroy'}
           </button>
@@ -108,7 +108,7 @@ export default function EnvironmentDetail() {
           node={
             <Link
               to={`/teams/${env.team_id}`}
-              className="block truncate font-mono text-sm text-cyan-400 hover:underline"
+              className="block truncate font-mono text-sm text-cyan-600 dark:text-cyan-400 hover:underline"
               title={env.team_slug}
             >
               {env.team_slug}
@@ -124,15 +124,15 @@ export default function EnvironmentDetail() {
         <Stat label="Created" value={`${formatUTC(env.created_at)} by @${env.created_by_username}`} small />
       </div>
 
-      <div className="mb-6 flex gap-1 border-b border-gray-800">
+      <div className="mb-6 flex gap-1 border-b border-gray-200 dark:border-gray-800">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               tab === t.id
-                ? 'border-b-2 border-cyan-500 text-cyan-400'
-                : 'text-gray-500 hover:text-gray-300'
+                ? 'border-b-2 border-cyan-500 text-cyan-600 dark:text-cyan-400'
+                : 'text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300'
             }`}
           >
             {t.label}
@@ -164,11 +164,11 @@ function Stat({
   small?: boolean
 }) {
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900 p-3">
-      <div className="mb-1 text-xs text-gray-500">{label}</div>
+    <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-3">
+      <div className="mb-1 text-xs text-gray-500 dark:text-gray-500">{label}</div>
       {node ?? (
         <div
-          className={`truncate ${mono ? 'font-mono' : ''} ${small ? 'text-xs' : 'text-sm'} text-gray-200`}
+          className={`truncate ${mono ? 'font-mono' : ''} ${small ? 'text-xs' : 'text-sm'} text-gray-800 dark:text-gray-200`}
           title={value}
         >
           {value}
@@ -181,17 +181,17 @@ function Stat({
 function OutputsTab({ env }: { env: Environment }) {
   if (env.status !== 'RUNNING' && !env.outputs) {
     return (
-      <p className="text-sm text-gray-500">
-        Outputs are populated once the environment reaches <code className="text-gray-400">RUNNING</code>.
+      <p className="text-sm text-gray-500 dark:text-gray-500">
+        Outputs are populated once the environment reaches <code className="text-gray-600 dark:text-gray-400">RUNNING</code>.
       </p>
     )
   }
   const entries = Object.entries(env.outputs ?? {})
   if (entries.length === 0) {
-    return <p className="text-sm text-gray-500">No outputs recorded for this environment.</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-500">No outputs recorded for this environment.</p>
   }
   return (
-    <div className="overflow-hidden rounded-lg border border-gray-800">
+    <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
       <table className="w-full text-sm">
         <tbody>
           {entries.map(([key, value]) => (
@@ -214,16 +214,16 @@ function OutputRow({ label, value }: { label: string; value: string }) {
   }
 
   return (
-    <tr className="border-b border-gray-800 last:border-0 hover:bg-gray-900">
-      <td className="w-1/3 px-4 py-2.5 text-xs text-gray-500">{label}</td>
+    <tr className="border-b border-gray-200 dark:border-gray-800 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-900">
+      <td className="w-1/3 px-4 py-2.5 text-xs text-gray-500 dark:text-gray-500">{label}</td>
       <td className="px-4 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-gray-200" title={value}>
+          <span className="font-mono text-gray-800 dark:text-gray-200" title={value}>
             {truncated}
           </span>
           <button
             onClick={copy}
-            className="text-xs text-gray-600 hover:text-cyan-400"
+            className="text-xs text-gray-400 hover:text-cyan-600 dark:text-gray-600 dark:hover:text-cyan-400"
             title="Copy to clipboard"
           >
             {copied ? '✓' : '⧉'}
@@ -256,18 +256,21 @@ function RunbookTab({ env }: { env: Environment }) {
     }
   }, [env.id, env.status])
 
-  if (error) return <p className="text-sm text-gray-500">{error}</p>
-  if (!content) return <p className="text-sm text-gray-500">Loading runbook…</p>
+  if (error) return <p className="text-sm text-gray-500 dark:text-gray-500">{error}</p>
+  if (!content) return <p className="text-sm text-gray-500 dark:text-gray-500">Loading runbook…</p>
   return <RunbookViewer envName={env.name} contentMd={content} />
 }
 
+// Light-mode values use the same darker/lighter-hue convention as
+// StatusBadge.tsx's STATUS_STYLES — these are text-only (no background),
+// so only the hue shade needs adjusting, not a full light/dark pair.
 const ACTION_COLORS: Record<string, string> = {
-  ENV_CREATED: 'text-green-400',
-  ENV_RUNNING: 'text-green-400',
-  ENV_DESTROY_REQUESTED: 'text-amber-400',
-  ENV_DESTROYED: 'text-red-400',
-  ENV_FAILED: 'text-red-400',
-  TTL_EXTENDED: 'text-amber-400',
+  ENV_CREATED: 'text-green-600 dark:text-green-400',
+  ENV_RUNNING: 'text-green-600 dark:text-green-400',
+  ENV_DESTROY_REQUESTED: 'text-amber-600 dark:text-amber-400',
+  ENV_DESTROYED: 'text-red-600 dark:text-red-400',
+  ENV_FAILED: 'text-red-600 dark:text-red-400',
+  TTL_EXTENDED: 'text-amber-600 dark:text-amber-400',
 }
 
 function AuditTab({ envId }: { envId: string }) {
@@ -281,26 +284,26 @@ function AuditTab({ envId }: { envId: string }) {
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed to load audit log'))
   }, [envId])
 
-  if (error) return <p className="text-sm text-red-400">{error}</p>
-  if (!logs) return <p className="text-sm text-gray-500">Loading…</p>
-  if (logs.length === 0) return <p className="text-sm text-gray-500">No audit events yet.</p>
+  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+  if (!logs) return <p className="text-sm text-gray-500 dark:text-gray-500">Loading…</p>
+  if (logs.length === 0) return <p className="text-sm text-gray-500 dark:text-gray-500">No audit events yet.</p>
 
   return (
     <div className="space-y-3">
       {logs.map((log) => (
-        <div key={log.id} className="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900 p-3">
-          <span className={`mt-0.5 text-lg ${ACTION_COLORS[log.action] ?? 'text-gray-500'}`}>●</span>
+        <div key={log.id} className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-3">
+          <span className={`mt-0.5 text-lg ${ACTION_COLORS[log.action] ?? 'text-gray-400 dark:text-gray-500'}`}>●</span>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <span className="font-mono text-sm font-semibold text-white">{log.action}</span>
-              <span className="font-mono text-xs text-gray-600">{formatUTC(log.created_at)}</span>
+              <span className="font-mono text-sm font-semibold text-gray-900 dark:text-white">{log.action}</span>
+              <span className="font-mono text-xs text-gray-400 dark:text-gray-600">{formatUTC(log.created_at)}</span>
             </div>
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-gray-500 dark:text-gray-500">
               {log.actor_type}
-              {log.actor_id && <span className="text-gray-600"> · {log.actor_id.slice(0, 8)}</span>}
+              {log.actor_id && <span className="text-gray-400 dark:text-gray-600"> · {log.actor_id.slice(0, 8)}</span>}
             </div>
             {log.metadata && Object.keys(log.metadata).length > 0 && (
-              <pre className="mt-1 overflow-x-auto rounded bg-gray-950 p-2 text-xs text-gray-500">
+              <pre className="mt-1 overflow-x-auto rounded bg-gray-50 dark:bg-gray-950 p-2 text-xs text-gray-500 dark:text-gray-500">
                 {JSON.stringify(log.metadata, null, 2)}
               </pre>
             )}
@@ -327,17 +330,17 @@ function CostTab({ env }: { env: Environment }) {
   return (
     <div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-          <div className="mb-1 text-xs text-gray-500">Estimated monthly cost</div>
-          <div className="font-mono text-2xl font-bold text-cyan-400">
+        <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-5">
+          <div className="mb-1 text-xs text-gray-500 dark:text-gray-500">Estimated monthly cost</div>
+          <div className="font-mono text-2xl font-bold text-cyan-600 dark:text-cyan-400">
             {env.cost_estimate_usd !== null ? `$${env.cost_estimate_usd.toFixed(2)}` : 'n/a'}
           </div>
-          <div className="mt-1 text-xs text-gray-600">Computed at creation time, 24/7 runtime assumed.</div>
+          <div className="mt-1 text-xs text-gray-400 dark:text-gray-600">Computed at creation time, 24/7 runtime assumed.</div>
         </div>
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-5">
-          <div className="mb-1 text-xs text-gray-500">Actual cost (latest snapshot)</div>
-          <div className="font-mono text-2xl font-bold text-gray-200">
-            {latest ? `$${latest.actual_cost_usd.toFixed(2)}` : <span className="text-gray-600">—</span>}
+        <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-5">
+          <div className="mb-1 text-xs text-gray-500 dark:text-gray-500">Actual cost (latest snapshot)</div>
+          <div className="font-mono text-2xl font-bold text-gray-800 dark:text-gray-200">
+            {latest ? `$${latest.actual_cost_usd.toFixed(2)}` : <span className="text-gray-400 dark:text-gray-600">—</span>}
           </div>
           {/*
             GET /environments/{id}/cost-snapshots is a real endpoint now —
@@ -345,14 +348,14 @@ function CostTab({ env }: { env: Environment }) {
             from AWS Cost Explorer, which is blocked on the AWS bootstrap. This
             fallback covers that empty-but-working state, not a missing route.
           */}
-          <div className="mt-1 text-xs text-gray-600">
+          <div className="mt-1 text-xs text-gray-400 dark:text-gray-600">
             {latest
               ? `${latest.period_start} → ${latest.period_end}`
               : 'Actual cost available after 24h (AWS Cost Explorer lag).'}
           </div>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
     </div>
   )
 }
