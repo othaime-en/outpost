@@ -11,14 +11,14 @@ export default function Modal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 px-4"
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 dark:bg-black/60 px-4"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-gray-800 bg-gray-900 p-6"
+        className="w-full max-w-sm rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-4 text-lg font-semibold text-white">{title}</h2>
+        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white">{title}</h2>
         {children}
       </div>
     </div>

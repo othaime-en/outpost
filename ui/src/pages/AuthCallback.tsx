@@ -45,17 +45,17 @@ export default function AuthCallback() {
   }, [login, navigate])
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+    <div className="min-h-screen bg-white dark:bg-gray-950 flex items-center justify-center">
       <div className="text-center">
         {error ? (
           <>
-            <p className="text-red-400 mb-4">{error}</p>
-            <a href="/login" className="text-cyan-400 hover:underline text-sm">
+            <p className="text-red-600 dark:text-red-400 mb-4">{error}</p>
+            <a href="/login" className="text-cyan-600 dark:text-cyan-400 hover:underline text-sm">
               Back to login
             </a>
           </>
         ) : (
-          <p className="text-gray-400">Signing you in…</p>
+          <p className="text-gray-600 dark:text-gray-400">Signing you in…</p>
         )}
       </div>
     </div>

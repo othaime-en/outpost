@@ -1,14 +1,12 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  // 'class' (not the default 'media') so the in-app toggle controls theme
+  // directly via a `dark` class on <html>, independent of OS preference.
+  // See src/hooks/useTheme.tsx for the class-toggling logic.
+  darkMode: "class",
   theme: {
     extend: {
-      // Custom colors that match the design system specified in the plan:
-      // - page background: gray-950
-      // - card/surface: gray-900 with gray-800 border
-      // - interactive/accent: cyan-400
-      // These are already in Tailwind's default palette; we add here for reference.
-
       // Three-tier type system (see index.css for the full rationale):
       //   sans (default)    — Inter. Everything you read or act on: nav,
       //                       buttons, labels, form fields, body copy.

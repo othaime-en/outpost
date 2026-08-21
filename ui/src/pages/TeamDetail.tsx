@@ -37,14 +37,14 @@ export default function TeamDetail() {
     return (
       <div>
         <BackLink />
-        <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40 p-4 text-sm text-red-700 dark:text-red-300">
           {error}
         </div>
       </div>
     )
   }
   if (!team) {
-    return <p className="text-sm text-gray-500">Loading team…</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-500">Loading team…</p>
   }
 
 
@@ -109,13 +109,13 @@ export default function TeamDetail() {
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-white">{team.name}</h1>
-          <p className="font-mono text-sm text-gray-500">{team.slug}</p>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">{team.name}</h1>
+          <p className="font-mono text-sm text-gray-500 dark:text-gray-500">{team.slug}</p>
         </div>
         {canDeleteTeam && (
           <button
             onClick={() => setShowDeleteTeam(true)}
-            className="rounded-md border border-red-900 px-3 py-1.5 text-xs font-semibold text-red-400 hover:bg-red-950"
+            className="rounded-md border border-red-300 dark:border-red-900 px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
           >
             Delete Team
           </button>
@@ -132,8 +132,8 @@ export default function TeamDetail() {
 
       {/* Members */}
       <section>
-        <h2 className="mb-3 font-mono text-xs uppercase tracking-wide text-cyan-400">Members</h2>
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <h2 className="mb-3 font-mono text-xs uppercase tracking-wide text-cyan-600 dark:text-cyan-400">Members</h2>
+        <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-5">
           <table className="w-full text-sm">
             <tbody>
               {team.members.map((m) => {
@@ -141,20 +141,20 @@ export default function TeamDetail() {
                 const canRemoveThis = isSelf || canManageMembers
                 const canPromoteThis = canManageMembers && m.team_role === 'member'
                 return (
-                  <tr key={m.id} className="border-b border-gray-800 last:border-0">
-                    <td className="py-2 font-mono text-gray-200">
+                  <tr key={m.id} className="border-b border-gray-200 dark:border-gray-800 last:border-0">
+                    <td className="py-2 font-mono text-gray-800 dark:text-gray-200">
                       {m.username}
-                      {isSelf && <span className="ml-2 text-xs text-gray-600">(you)</span>}
+                      {isSelf && <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">(you)</span>}
                     </td>
-                    <td className="py-2 text-gray-500">{m.email ?? '—'}</td>
-                    <td className="py-2 text-right text-xs text-gray-500 uppercase">{m.team_role}</td>
+                    <td className="py-2 text-gray-500 dark:text-gray-500">{m.email ?? '—'}</td>
+                    <td className="py-2 text-right text-xs text-gray-500 dark:text-gray-500 uppercase">{m.team_role}</td>
                     <td className="py-2 pl-4 text-right">
                       <div className="flex justify-end gap-2">
                         {canPromoteThis && (
                           <button
                             onClick={() => promoteToAdmin(m.id)}
                             disabled={busy}
-                            className="text-xs text-cyan-400 hover:underline disabled:opacity-50"
+                            className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline disabled:opacity-50"
                           >
                             Promote
                           </button>
@@ -163,7 +163,7 @@ export default function TeamDetail() {
                           <button
                             onClick={() => setRemoveTarget(m)}
                             disabled={busy}
-                            className="text-xs text-red-400 hover:underline disabled:opacity-50"
+                            className="text-xs text-red-600 dark:text-red-400 hover:underline disabled:opacity-50"
                           >
                             {isSelf ? 'Leave' : 'Remove'}
                           </button>
@@ -175,7 +175,7 @@ export default function TeamDetail() {
               })}
               {team.members.length === 0 && (
                 <tr>
-                  <td className="py-3 text-gray-600">No members yet.</td>
+                  <td className="py-3 text-gray-400 dark:text-gray-600">No members yet.</td>
                 </tr>
               )}
             </tbody>
@@ -187,24 +187,24 @@ export default function TeamDetail() {
 
       {/* Environments */}
       <section>
-        <h2 className="mb-3 font-mono text-xs uppercase tracking-wide text-cyan-400">Environments</h2>
-        <div className="rounded-xl border border-gray-800 bg-gray-900">
+        <h2 className="mb-3 font-mono text-xs uppercase tracking-wide text-cyan-600 dark:text-cyan-400">Environments</h2>
+        <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
           {team.environments.length === 0 && (
-            <p className="p-5 text-sm text-gray-600">No environments for this team yet.</p>
+            <p className="p-5 text-sm text-gray-400 dark:text-gray-600">No environments for this team yet.</p>
           )}
           {team.environments.map((env) => (
             <Link
               key={env.id}
               to={`/environments/${env.id}`}
-              className="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-3 text-sm last:border-0 hover:bg-gray-800/50"
+              className="flex items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-800 px-5 py-3 text-sm last:border-0 hover:bg-gray-50 dark:hover:bg-gray-800/50"
             >
               <div className="flex min-w-0 items-center gap-2">
                 <HealthIndicator status={env.health_status} />
-                <span className="truncate font-mono text-gray-200">{env.name}</span>
-                <span className="font-mono text-xs text-gray-600">{shortId(env.id)}</span>
+                <span className="truncate font-mono text-gray-800 dark:text-gray-200">{env.name}</span>
+                <span className="font-mono text-xs text-gray-400 dark:text-gray-600">{shortId(env.id)}</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="hidden font-mono text-xs uppercase text-gray-500 sm:inline">{env.env_type}</span>
+                <span className="hidden font-mono text-xs uppercase text-gray-500 dark:text-gray-500 sm:inline">{env.env_type}</span>
                 <CostBadge costUsd={env.cost_estimate_usd} />
                 <StatusBadge status={env.status} />
               </div>
@@ -219,12 +219,12 @@ export default function TeamDetail() {
           title={removeTarget.id === user?.id ? 'Leave this team?' : `Remove @${removeTarget.username}?`}
           onClose={() => setRemoveTarget(null)}
         >
-          <p className="mb-5 text-sm text-gray-400">
+          <p className="mb-5 text-sm text-gray-600 dark:text-gray-400">
             {removeTarget.id === user?.id
               ? "You'll lose access to this team's environments and members list. You can be re-added later."
               : `@${removeTarget.username} will lose access to this team's environments and members list.`}
             {removeTarget.team_role === 'team_admin' && (
-              <span className="mt-2 block text-amber-400">
+              <span className="mt-2 block text-amber-600 dark:text-amber-400">
                 If this is the team's last team_admin, removal will be blocked — promote another
                 member first.
               </span>
@@ -233,7 +233,7 @@ export default function TeamDetail() {
           <div className="flex justify-end gap-2">
             <button
               onClick={() => setRemoveTarget(null)}
-              className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+              className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
             >
               Cancel
             </button>
@@ -253,15 +253,15 @@ export default function TeamDetail() {
         <Modal title={`Delete ${team.name}?`} onClose={() => setShowDeleteTeam(false)}>
           {blockingEnvironments.length > 0 ? (
             <div>
-              <p className="mb-3 text-sm text-gray-400">
+              <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
                 This team has {blockingEnvironments.length} environment(s) that aren't DESTROYED
                 yet. Destroy running ones, resolve any FAILED ones, or cancel PENDING ones before
                 deleting the team:
               </p>
-              <ul className="mb-5 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-800 bg-gray-950 p-3">
+              <ul className="mb-5 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-950 p-3">
                 {blockingEnvironments.map((e) => (
                   <li key={e.id} className="flex items-center justify-between text-xs">
-                    <Link to={`/environments/${e.id}`} className="truncate font-mono text-gray-300 hover:text-cyan-400">
+                    <Link to={`/environments/${e.id}`} className="truncate font-mono text-gray-600 hover:text-cyan-600 dark:text-gray-300 dark:hover:text-cyan-400">
                       {e.name}
                     </Link>
                     <StatusBadge status={e.status} />
@@ -271,7 +271,7 @@ export default function TeamDetail() {
               <div className="flex justify-end">
                 <button
                   onClick={() => setShowDeleteTeam(false)}
-                  className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                  className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
                 >
                   Close
                 </button>
@@ -279,14 +279,14 @@ export default function TeamDetail() {
             </div>
           ) : (
             <div>
-              <p className="mb-5 text-sm text-gray-400">
+              <p className="mb-5 text-sm text-gray-600 dark:text-gray-400">
                 All {team.members.length} member(s) will lose access to this team immediately. This
                 cannot be undone.
               </p>
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => setShowDeleteTeam(false)}
-                  className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                  className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
                 >
                   Cancel
                 </button>
@@ -310,7 +310,7 @@ export default function TeamDetail() {
 
 function BackLink() {
   return (
-    <Link to="/teams" className="mb-4 inline-block text-xs text-gray-500 hover:text-gray-300">
+    <Link to="/teams" className="mb-4 inline-block text-xs text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300">
       ← Back to Teams
     </Link>
   )
@@ -318,9 +318,9 @@ function BackLink() {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="mt-1 font-mono text-lg font-semibold text-white">{value}</div>
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-4">
+      <div className="text-xs text-gray-500 dark:text-gray-500">{label}</div>
+      <div className="mt-1 font-mono text-lg font-semibold text-gray-900 dark:text-white">{value}</div>
     </div>
   )
 }
@@ -348,24 +348,24 @@ function AddMemberForm({ teamId, onAdded }: { teamId: string; onAdded: () => voi
   }
 
   return (
-    <form onSubmit={submit} className="mt-5 flex flex-wrap items-end gap-3 border-t border-gray-800 pt-5">
-      {error && <p className="w-full text-sm text-red-400">{error}</p>}
+    <form onSubmit={submit} className="mt-5 flex flex-wrap items-end gap-3 border-t border-gray-200 dark:border-gray-800 pt-5">
+      {error && <p className="w-full text-sm text-red-600 dark:text-red-400">{error}</p>}
       <div>
-        <label className="mb-1 block text-xs text-gray-500">GitHub username</label>
+        <label className="mb-1 block text-xs text-gray-500 dark:text-gray-500">GitHub username</label>
         <input
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           placeholder="octocat"
-          className="rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white
-                     placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
+          className="rounded-md border border-gray-300 bg-white dark:border-gray-800 dark:bg-gray-950 px-3 py-1.5 text-sm text-gray-900 dark:text-white
+                     placeholder-gray-400 dark:placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs text-gray-500">Role</label>
+        <label className="mb-1 block text-xs text-gray-500 dark:text-gray-500">Role</label>
         <select
           value={role}
           onChange={(e) => setRole(e.target.value as TeamRole)}
-          className="rounded-md border border-gray-800 bg-gray-950 px-3 py-1.5 text-sm text-white focus:border-cyan-600 focus:outline-none"
+          className="rounded-md border border-gray-300 bg-white dark:border-gray-800 dark:bg-gray-950 px-3 py-1.5 text-sm text-gray-900 dark:text-white focus:border-cyan-600 focus:outline-none"
         >
           {TEAM_ROLES.map((r) => (
             <option key={r} value={r}>

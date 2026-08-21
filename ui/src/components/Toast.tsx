@@ -6,8 +6,8 @@ export interface ToastState {
 }
 
 const KIND_STYLES: Record<ToastState['kind'], string> = {
-  success: 'border-green-800 bg-green-950 text-green-300',
-  error: 'border-red-800 bg-red-950 text-red-300',
+  success: 'border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300',
+  error: 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300',
 }
 
 export default function Toast({

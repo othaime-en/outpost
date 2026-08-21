@@ -6,12 +6,26 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IDP Lite — Self-Service Environments</title>
+    <script>
+        // Runs before first paint, ahead of React and useTheme.tsx's effect.
+        // Reads the same 'idplite-theme' key useTheme.tsx persists to, so a
+        // returning light-mode visitor never sees a flash of dark (or vice
+        // versa) while the app boots. Defaults to dark, matching
+        // useTheme.tsx's readInitialTheme() default for first-time visitors.
+        (function () {
+            var stored = localStorage.getItem('idplite-theme')
+            var isDark = stored !== 'light'
+            document.documentElement.classList.toggle('dark', isDark)
+            document.documentElement.style.background = isDark ? '#030712' : '#ffffff'
+        })()
+    </script>
 </head>
 
 <body>
-    <!-- React mounts here. The dark background is set inline to prevent
-         a white flash before the CSS loads. -->
-    <div id="root" style="background: #030712; min-height: 100vh;"></div>
+    <!-- The root's background is intentionally left to the inline script
+         above (via <html>'s background) rather than hardcoded here, since
+         which color is "correct" now depends on the persisted theme. -->
+    <div id="root" style="min-height: 100vh;"></div>
     <script type="module" src="/src/main.tsx"></script>
 </body>
 

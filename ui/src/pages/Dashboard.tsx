@@ -32,10 +32,10 @@ export default function Dashboard() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-white">
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">
             Environments
           </h1>
-          <p className="text-sm text-gray-500">{subtitle}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-500">{subtitle}</p>
         </div>
         <Link
           to="/new"
@@ -52,22 +52,22 @@ export default function Dashboard() {
         showTeamFilter={isSuper || teams.length > 1}
       />
 
-      {loading && <p className="text-sm text-gray-500">Loading environments…</p>}
+      {loading && <p className="text-sm text-gray-500 dark:text-gray-500">Loading environments…</p>}
 
       {error && !loading && (
-        <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40 p-4 text-sm text-red-700 dark:text-red-300">
           {error}
         </div>
       )}
 
       {!loading && !error && environments.length === 0 && (
-        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
-          <p className="mb-4 text-gray-400">
+        <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-800 p-12 text-center">
+          <p className="mb-4 text-gray-600 dark:text-gray-400">
             {Object.keys(filters).length > 0
               ? 'No environments match these filters.'
               : 'No environments yet.'}
           </p>
-          <Link to="/new" className="text-cyan-400 hover:underline text-sm">
+          <Link to="/new" className="text-cyan-600 dark:text-cyan-400 hover:underline text-sm">
             Provision your first environment →
           </Link>
         </div>

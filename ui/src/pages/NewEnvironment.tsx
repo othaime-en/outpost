@@ -73,27 +73,27 @@ export default function NewEnvironment() {
 
   if (teamsError) {
     return (
-      <div className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
+      <div className="rounded-lg border border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40 p-4 text-sm text-red-700 dark:text-red-300">
         {teamsError}
       </div>
     )
   }
 
   if (teams === null) {
-    return <p className="text-sm text-gray-500">Loading your teams…</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-500">Loading your teams…</p>
   }
 
   if (teams.length === 0) {
     return (
       <div>
-        <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-white">
+        <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">
           New Environment
         </h1>
-        <div className="rounded-xl border border-dashed border-gray-800 p-12 text-center">
-          <p className="mb-4 text-gray-400">
+        <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-800 p-12 text-center">
+          <p className="mb-4 text-gray-600 dark:text-gray-400">
             You need to belong to a team before you can provision an environment.
           </p>
-          <Link to="/teams" className="text-cyan-400 hover:underline text-sm">
+          <Link to="/teams" className="text-cyan-600 dark:text-cyan-400 hover:underline text-sm">
             Create or join a team →
           </Link>
         </div>
@@ -103,7 +103,7 @@ export default function NewEnvironment() {
 
   return (
     <div>
-      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-white">
+      <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">
         New Environment
       </h1>
 
@@ -112,11 +112,11 @@ export default function NewEnvironment() {
         <form onSubmit={handleSubmit} className="space-y-6">
           {teams.length > 1 && (
             <div>
-              <label className="mb-1 block text-sm text-gray-300">Team</label>
+              <label className="mb-1 block text-sm text-gray-700 dark:text-gray-300">Team</label>
               <select
                 value={teamId}
                 onChange={(e) => setTeamId(e.target.value)}
-                className="w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:border-cyan-600 focus:outline-none"
+                className="w-full rounded-md border border-gray-300 bg-white dark:border-gray-800 dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white focus:border-cyan-600 focus:outline-none"
               >
                 {teams.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -128,21 +128,21 @@ export default function NewEnvironment() {
           )}
 
           <div>
-            <label className="mb-1 block text-sm text-gray-300">Name</label>
+            <label className="mb-1 block text-sm text-gray-700 dark:text-gray-300">Name</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="my-feature"
-              className="w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 font-mono text-sm text-white
-                         placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
+              className="w-full rounded-md border border-gray-300 bg-white dark:border-gray-800 dark:bg-gray-900 px-3 py-2 font-mono text-sm text-gray-900 dark:text-white
+                         placeholder-gray-400 dark:placeholder-gray-600 focus:border-cyan-600 focus:outline-none"
             />
             {nameTouched && !nameValid && (
-              <p className="mt-1 text-xs text-red-400">Lowercase alphanumeric and hyphens only.</p>
+              <p className="mt-1 text-xs text-red-600 dark:text-red-400">Lowercase alphanumeric and hyphens only.</p>
             )}
           </div>
 
           <div>
-            <label className="mb-2 block text-sm text-gray-300">Type</label>
+            <label className="mb-2 block text-sm text-gray-700 dark:text-gray-300">Type</label>
             <div className="flex gap-3">
               {(['dev', 'staging'] as const).map((t) => (
                 <button
@@ -151,8 +151,8 @@ export default function NewEnvironment() {
                   onClick={() => setEnvType(t)}
                   className={`flex-1 rounded-md border px-4 py-2 text-sm font-medium capitalize transition-colors ${
                     envType === t
-                      ? 'border-cyan-600 bg-cyan-950 text-cyan-300'
-                      : 'border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-700'
+                      ? 'border-cyan-600 bg-cyan-50 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300'
+                      : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400 dark:hover:border-gray-700'
                   }`}
                 >
                   {t}
@@ -163,8 +163,8 @@ export default function NewEnvironment() {
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <label className="text-sm text-gray-300">TTL</label>
-              <span className="font-mono text-sm text-cyan-400">{ttlHours}h</span>
+              <label className="text-sm text-gray-700 dark:text-gray-300">TTL</label>
+              <span className="font-mono text-sm text-cyan-600 dark:text-cyan-400">{ttlHours}h</span>
             </div>
             <input
               type="range"
@@ -174,14 +174,14 @@ export default function NewEnvironment() {
               onChange={(e) => setTtlHours(Number(e.target.value))}
               className="w-full accent-cyan-500"
             />
-            <div className="mt-1 flex justify-between text-xs text-gray-600">
+            <div className="mt-1 flex justify-between text-xs text-gray-500 dark:text-gray-600">
               <span>1h</span>
               <span>168h (7d)</span>
             </div>
           </div>
 
           {formError && (
-            <div className="rounded-md border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">
+            <div className="rounded-md border border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40 p-3 text-sm text-red-700 dark:text-red-300">
               {formError}
             </div>
           )}
@@ -197,22 +197,22 @@ export default function NewEnvironment() {
         </form>
 
         {/* Right column — cost preview */}
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 h-fit">
-          <h2 className="mb-4 text-sm font-mono uppercase tracking-wide text-cyan-400">Cost Estimate</h2>
-          {previewError && <p className="text-sm text-red-400">{previewError}</p>}
+        <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-6 h-fit">
+          <h2 className="mb-4 text-sm font-mono uppercase tracking-wide text-cyan-600 dark:text-cyan-400">Cost Estimate</h2>
+          {previewError && <p className="text-sm text-red-600 dark:text-red-400">{previewError}</p>}
           {preview && (
             <div className="space-y-3">
               <Row label="ECS Fargate" value={preview.ecs_fargate} />
               <Row label="RDS Postgres" value={preview.rds_postgres} />
               <Row label="CloudWatch Logs" value={preview.cloudwatch_logs} />
               <Row label="Secrets Manager" value={preview.secrets_manager} />
-              <div className="mt-4 flex items-center justify-between border-t border-gray-800 pt-3">
-                <span className="text-sm font-semibold text-white">Total</span>
-                <span className="font-mono text-lg font-bold text-cyan-400">
+              <div className="mt-4 flex items-center justify-between border-t border-gray-200 dark:border-gray-800 pt-3">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">Total</span>
+                <span className="font-mono text-lg font-bold text-cyan-600 dark:text-cyan-400">
                   ${preview.total_monthly.toFixed(2)}/mo
                 </span>
               </div>
-              <p className="pt-2 text-xs text-gray-600">{preview.note}</p>
+              <p className="pt-2 text-xs text-gray-500 dark:text-gray-600">{preview.note}</p>
             </div>
           )}
         </div>
@@ -224,8 +224,8 @@ export default function NewEnvironment() {
 function Row({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex items-center justify-between text-sm">
-      <span className="text-gray-400">{label}</span>
-      <span className="font-mono text-gray-300">${value.toFixed(2)}/mo</span>
+      <span className="text-gray-600 dark:text-gray-400">{label}</span>
+      <span className="font-mono text-gray-700 dark:text-gray-300">${value.toFixed(2)}/mo</span>
     </div>
   )
 }
