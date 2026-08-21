@@ -96,7 +96,7 @@ export function useEnvironmentActions(onChanged: () => void) {
             title={isPendingCancel(destroyTarget) ? `Cancel ${destroyTarget.name}?` : `Destroy ${destroyTarget.name}?`}
             onClose={() => setDestroyTarget(null)}
           >
-            <p className="mb-5 text-sm text-gray-400">
+            <p className="mb-5 text-sm text-gray-600 dark:text-gray-400">
               {isPendingCancel(destroyTarget) ? (
                 <>
                   This environment never received confirmation that any AWS resources were
@@ -114,7 +114,7 @@ export function useEnvironmentActions(onChanged: () => void) {
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setDestroyTarget(null)}
-                className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
               >
                 Cancel
               </button>
@@ -137,20 +137,20 @@ export function useEnvironmentActions(onChanged: () => void) {
 
         {extendTarget && (
           <Modal title={`Extend TTL — ${extendTarget.name}`} onClose={() => setExtendTarget(null)}>
-            <label className="mb-1 block text-xs text-gray-500">Extend by (hours)</label>
+            <label className="mb-1 block text-xs text-gray-500 dark:text-gray-500">Extend by (hours)</label>
             <input
               type="number"
               min={1}
               max={168}
               value={extendHours}
               onChange={(e) => setExtendHours(Number(e.target.value))}
-              className="mb-5 w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white
+              className="mb-5 w-full rounded-md border border-gray-300 bg-white dark:border-gray-800 dark:bg-gray-950 px-3 py-2 text-sm text-gray-900 dark:text-white
                          focus:border-cyan-600 focus:outline-none"
             />
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setExtendTarget(null)}
-                className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
               >
                 Cancel
               </button>
