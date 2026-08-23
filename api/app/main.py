@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, environments, audit, teams, users, health
 from app.services import health_checker
 
-logger = logging.getLogger("idplite.main")
+logger = logging.getLogger("outpost.main")
 
 
 # --- Background Health Polling ---
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="IDP Lite API",
+    title="Outpost API",
     version="0.1.0",
     description="Self-service Internal Developer Platform — provision cloud environments on demand.",
     lifespan=lifespan,

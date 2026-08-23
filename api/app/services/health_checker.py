@@ -14,7 +14,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.orm import Session
 
-logger = logging.getLogger("idplite.health_checker")
+logger = logging.getLogger("outpost.health_checker")
 
 HEALTHY = "HEALTHY"
 DEGRADED = "DEGRADED"

@@ -1,5 +1,5 @@
 resource "aws_secretsmanager_secret" "rds" {
-  name        = "idp-lite/${var.env_id}/rds"
+  name        = "outpost/${var.env_id}/rds"
   description = "RDS credentials for environment ${var.env_id}"
   tags        = var.common_tags
 }

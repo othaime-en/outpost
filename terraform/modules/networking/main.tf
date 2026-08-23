@@ -27,18 +27,18 @@ resource "aws_subnet" "env_a" {
   vpc_id            = var.vpc_id
   cidr_block        = "10.0.${random_integer.subnet_octet.result}.0/25"
   availability_zone = "${var.region}a"
-  tags              = merge(var.common_tags, { Name = "idp-lite-${var.env_id}-a" })
+  tags              = merge(var.common_tags, { Name = "outpost-${var.env_id}-a" })
 }
 
 resource "aws_subnet" "env_b" {
   vpc_id            = var.vpc_id
   cidr_block        = "10.0.${random_integer.subnet_octet.result}.128/25"
   availability_zone = "${var.region}b"
-  tags              = merge(var.common_tags, { Name = "idp-lite-${var.env_id}-b" })
+  tags              = merge(var.common_tags, { Name = "outpost-${var.env_id}-b" })
 }
 
 resource "aws_security_group" "env" {
-  name        = "idp-lite-${var.env_id}"
+  name        = "outpost-${var.env_id}"
   description = "SG for environment ${var.env_id}"
   vpc_id      = var.vpc_id
 
@@ -72,5 +72,5 @@ resource "aws_security_group" "env" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(var.common_tags, { Name = "idp-lite-${var.env_id}" })
+  tags = merge(var.common_tags, { Name = "outpost-${var.env_id}" })
 }

@@ -5,15 +5,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IDP Lite — Self-Service Environments</title>
+    <title>Outpost — Self-Service Environments</title>
     <script>
         // Runs before first paint, ahead of React and useTheme.tsx's effect.
-        // Reads the same 'idplite-theme' key useTheme.tsx persists to, so a
+        // Reads the same 'outpost-theme' key useTheme.tsx persists to, so a
         // returning light-mode visitor never sees a flash of dark (or vice
         // versa) while the app boots. Defaults to dark, matching
         // useTheme.tsx's readInitialTheme() default for first-time visitors.
         (function () {
-            var stored = localStorage.getItem('idplite-theme')
+            var stored = localStorage.getItem('outpost-theme')
             var isDark = stored !== 'light'
             document.documentElement.classList.toggle('dark', isDark)
             document.documentElement.style.background = isDark ? '#030712' : '#ffffff'

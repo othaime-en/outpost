@@ -1,5 +1,5 @@
 /**
- * Typed HTTP client for the IDP Lite API.
+ * Typed HTTP client for the Outpost API.
  *
  * Every request goes through here so that:
  *   - the Bearer token is attached consistently

@@ -17,11 +17,11 @@ from types import SimpleNamespace
 from app.services import runbook
 
 FULL_OUTPUTS = {
-    "ecs_service_arn": "arn:aws:ecs:us-east-1:123456789012:service/idp-lite-shared/svc-abc",
-    "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123456789012:cluster/idp-lite-shared",
-    "rds_endpoint": "idp-lite-abc123.us-east-1.rds.amazonaws.com:5432",
-    "rds_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:idp-lite/abc/rds",
-    "log_group_name": "/idp-lite/abc123",
+    "ecs_service_arn": "arn:aws:ecs:us-east-1:123456789012:service/outpost-shared/svc-abc",
+    "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123456789012:cluster/outpost-shared",
+    "rds_endpoint": "outpost-abc123.us-east-1.rds.amazonaws.com:5432",
+    "rds_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:outpost/abc/rds",
+    "log_group_name": "/outpost/abc123",
     "subnet_id": "subnet-0abc123",
 }
 
@@ -91,13 +91,13 @@ class TestGenerate:
     def test_includes_ttl_extend_and_destroy_commands(self):
         env = _fake_env()
         content = runbook.generate(env, FULL_OUTPUTS)
-        assert f"idplite env extend {env.id}" in content
-        assert f"idplite env destroy {env.id}" in content
+        assert f"outpost env extend {env.id}" in content
+        assert f"outpost env destroy {env.id}" in content
 
     def test_respects_custom_api_base_url(self):
         env = _fake_env()
-        content = runbook.generate(env, FULL_OUTPUTS, api_base_url="https://api.idplite.example.com")
-        assert "https://api.idplite.example.com" in content
+        content = runbook.generate(env, FULL_OUTPUTS, api_base_url="https://api.outpost.example.com")
+        assert "https://api.outpost.example.com" in content
 
     def test_output_is_valid_markdown_heading_structure(self):
         env = _fake_env()

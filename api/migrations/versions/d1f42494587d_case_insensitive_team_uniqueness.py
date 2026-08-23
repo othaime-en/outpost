@@ -15,7 +15,7 @@ unique indexes on `lower(name)` / `lower(slug)`, still scoped to
 `WHERE deleted_at IS NULL`. Two teams may no longer differ only by case.
 
 Deliberately NOT changed here: the `name` COLUMN itself is untouched and
-stores whatever casing the creator typed ("IDP Lite", "K8s Platform",
+stores whatever casing the creator typed ("Outpost", "K8s Platform",
 etc.) — this migration only affects the uniqueness CHECK, not what's
 persisted. There's no companion data migration to lowercase existing rows
 in place, because the column values aren't changing, only how two of them

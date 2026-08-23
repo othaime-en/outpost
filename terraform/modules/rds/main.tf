@@ -4,13 +4,13 @@ resource "random_password" "db" {
 }
 
 resource "aws_db_subnet_group" "env" {
-  name       = "idp-lite-${var.env_id}"
+  name       = "outpost-${var.env_id}"
   subnet_ids = var.subnet_ids
   tags       = var.common_tags
 }
 
 resource "aws_db_instance" "env" {
-  identifier     = "idp-lite-${substr(var.env_id, 0, 8)}"
+  identifier     = "outpost-${substr(var.env_id, 0, 8)}"
   engine         = "postgres"
   engine_version = "15.4"
   instance_class = "db.t3.micro"

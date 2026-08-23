@@ -699,10 +699,10 @@ class TestCallback:
         env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PROVISIONING")
         outputs = {
             "ecs_service_arn": "arn:aws:ecs:us-east-1:123:service/foo",
-            "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123:cluster/idp-lite-shared",
-            "rds_endpoint": "idp-lite-abc.rds.amazonaws.com",
-            "rds_secret_arn": "arn:aws:secretsmanager:us-east-1:123:secret/idp-lite/abc/rds",
-            "log_group_name": "/idp-lite/abc",
+            "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123:cluster/outpost-shared",
+            "rds_endpoint": "outpost-abc.rds.amazonaws.com",
+            "rds_secret_arn": "arn:aws:secretsmanager:us-east-1:123:secret/outpost/abc/rds",
+            "log_group_name": "/outpost/abc",
             "subnet_id": "subnet-123",
         }
         response = client.post(

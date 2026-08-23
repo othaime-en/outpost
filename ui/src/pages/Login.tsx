@@ -28,7 +28,7 @@ export default function Login() {
           Self-Service Platform
         </p>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-gray-900 dark:text-white mb-2">
-          IDP Lite
+          Outpost
         </h1>
         <p className="text-gray-600 dark:text-gray-400 mb-8 text-sm">Provision cloud environments on demand</p>
         {/*

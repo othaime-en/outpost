@@ -1,18 +1,18 @@
 # References the shared ECS cluster, created once during bootstrap
-# (Section 2.1: `aws ecs create-cluster --cluster-name idp-lite-shared`).
+# (Section 2.1: `aws ecs create-cluster --cluster-name outpost-shared`).
 # One cluster hosts every environment's service, namespaced by env_id.
 data "aws_ecs_cluster" "shared" {
-  cluster_name = "idp-lite-shared"
+  cluster_name = "outpost-shared"
 }
 
 resource "aws_cloudwatch_log_group" "env" {
-  name              = "/idp-lite/${var.env_id}"
+  name              = "/outpost/${var.env_id}"
   retention_in_days = 7
   tags              = var.common_tags
 }
 
 resource "aws_iam_role" "task" {
-  name = "idp-lite-task-${var.env_id}"
+  name = "outpost-task-${var.env_id}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -54,7 +54,7 @@ resource "aws_iam_role_policy" "task_secrets" {
 }
 
 resource "aws_ecs_task_definition" "env" {
-  family                   = "idp-lite-${var.env_id}"
+  family                   = "outpost-${var.env_id}"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = 256
@@ -91,7 +91,7 @@ resource "aws_ecs_task_definition" "env" {
 }
 
 resource "aws_ecs_service" "env" {
-  name            = "idp-lite-${var.env_id}"
+  name            = "outpost-${var.env_id}"
   cluster         = data.aws_ecs_cluster.shared.id
   task_definition = aws_ecs_task_definition.env.arn
   desired_count   = 1

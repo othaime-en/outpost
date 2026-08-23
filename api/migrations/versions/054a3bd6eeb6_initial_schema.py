@@ -4,7 +4,7 @@ Revision ID: 054a3bd6eeb6
 Revises: 
 Create Date: 2026-02-26 23:46:58.575100
 
-This is the initial database schema for IDP Lite.
+This is the initial database schema for Outpost.
 It creates all 6 tables in dependency order (referenced tables before referencing tables).
 
 Table creation order matters because of foreign key constraints:

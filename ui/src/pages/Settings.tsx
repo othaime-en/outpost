@@ -56,7 +56,7 @@ function ApiKeySection() {
   return (
     <Section title="API Key">
       <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
-        Generate a key for the <code className="text-gray-700 dark:text-gray-300">idplite</code> CLI. Each key generation
+        Generate a key for the <code className="text-gray-700 dark:text-gray-300">outpost</code> CLI. Each key generation
         invalidates the previous one.
       </p>
       {!key && (
@@ -82,7 +82,7 @@ function ApiKeySection() {
             </button>
           </div>
           <p className="text-xs text-red-600 dark:text-red-400">
-            This key will not be shown again. Store it in your CLI config (<code>~/.idplite/config.yaml</code>).
+            This key will not be shown again. Store it in your CLI config (<code>~/.outpost/config.yaml</code>).
           </p>
         </div>
       )}

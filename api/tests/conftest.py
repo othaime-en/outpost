@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from passlib.hash import bcrypt
 
-os.environ.setdefault("DATABASE_URL", "postgresql://idplite:idplite@localhost:5432/idplite_test")
+os.environ.setdefault("DATABASE_URL", "postgresql://outpost:outpost@localhost:5432/outpost_test")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("CALLBACK_SECRET", "test-callback-secret")
 # GitHub OAuth isn't exercised end-to-end in tests (that would need a live
@@ -307,7 +307,7 @@ def user_with_api_key(db_session) -> User:
     after generation.
     """
     user = _make_user(db_session)
-    raw_key = f"idplite_test_{uuid.uuid4().hex}"
+    raw_key = f"outpost_test_{uuid.uuid4().hex}"
     user.api_key_hash = bcrypt.hash(raw_key)
     db_session.commit()
     db_session.refresh(user)

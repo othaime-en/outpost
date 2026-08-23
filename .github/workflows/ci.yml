@@ -13,9 +13,9 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_DB: idplite_test
-          POSTGRES_USER: idplite
-          POSTGRES_PASSWORD: idplite
+          POSTGRES_DB: outpost_test
+          POSTGRES_USER: outpost
+          POSTGRES_PASSWORD: outpost
         ports:
           - 5432:5432
         options: >-
@@ -45,13 +45,13 @@ jobs:
 
         run: cd api && alembic upgrade head
         env:
-          DATABASE_URL: postgresql://idplite:idplite@localhost:5432/idplite_test
+          DATABASE_URL: postgresql://outpost:outpost@localhost:5432/outpost_test
           SECRET_KEY: ci-test-secret-key
 
       - name: Run tests
         run: pytest api/tests/ -v --tb=short
         env:
-          DATABASE_URL: postgresql://idplite:idplite@localhost:5432/idplite_test
+          DATABASE_URL: postgresql://outpost:outpost@localhost:5432/outpost_test
           SECRET_KEY: ci-test-secret-key
           CALLBACK_SECRET: ci-callback-secret
           PYTHONPATH: api

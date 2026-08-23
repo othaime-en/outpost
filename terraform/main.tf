@@ -9,7 +9,7 @@ locals {
     team       = var.team
     env_type   = var.env_type
     ttl_hours  = tostring(var.ttl_hours)
-    managed_by = "idp-lite"
+    managed_by = "outpost"
   }
 }
 

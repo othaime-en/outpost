@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 from rich.console import Console
 
-from idplite.config import get_api_key, get_endpoint
+from outpost.config import get_api_key, get_endpoint
 
 console = Console()
 
@@ -25,7 +25,7 @@ class IDPClient:
         if not self.key:
             console.print(
                 "[red]✗ No API key configured.[/red] "
-                "Run [bold]idplite auth key generate[/bold] first."
+                "Run [bold]outpost auth key generate[/bold] first."
             )
             raise SystemExit(1)
         return {"X-API-Key": self.key}
