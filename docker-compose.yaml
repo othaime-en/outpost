@@ -2,16 +2,16 @@ services:
   postgres:
     image: postgres:18
     environment:
-      POSTGRES_DB: idplite
-      POSTGRES_USER: idplite
-      POSTGRES_PASSWORD: idplite
+      POSTGRES_DB: outpost
+      POSTGRES_USER: outpost
+      POSTGRES_PASSWORD: outpost
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U idplite" ]
+      test: [ "CMD-SHELL", "pg_isready -U outpost" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -22,7 +22,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://idplite:idplite@postgres:5432/idplite
+      DATABASE_URL: postgresql://outpost:outpost@postgres:5432/outpost
       SECRET_KEY: dev-secret-key-change-in-prod
       CALLBACK_SECRET: dev-callback-secret
       # Pulled from a root .env file if present (docker

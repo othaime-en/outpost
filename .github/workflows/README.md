@@ -6,9 +6,9 @@ require the following secrets, set under
 
 | Secret              | Value                                                                                                                                               |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AWS_ROLE_ARN`      | ARN of the IAM role created during the Terraform bootstrap (Section 2.1 / `terraform/README.md`), trusted for OIDC from `repo:othaime-en/idplite:*` |
-| `TF_STATE_BUCKET`   | `idp-lite-tfstate`                                                                                                                                  |
-| `TF_LOCK_TABLE`     | `idp-lite-tflock`                                                                                                                                   |
+| `AWS_ROLE_ARN`      | ARN of the IAM role created during the Terraform bootstrap (Section 2.1 / `terraform/README.md`), trusted for OIDC from `repo:othaime-en/outpost:*` |
+| `TF_STATE_BUCKET`   | `outpost-tfstate`                                                                                                                                  |
+| `TF_LOCK_TABLE`     | `outpost-tflock`                                                                                                                                   |
 | `SHARED_VPC_ID`     | The `vpc_id` output from the one-time VPC bootstrap                                                                                                 |
 | `CALLBACK_BASE_URL` | Public base URL of the FastAPI backend (e.g. an ngrok URL for local dev, or the deployed API URL) — **no trailing slash**                           |
 | `CALLBACK_SECRET`   | Same value as the `CALLBACK_SECRET` env var read by `app/config.py`                                                                                 |
@@ -53,7 +53,7 @@ init` time in both `provision.yml` and `destroy.yml`. This is required
   `provision.yml` flattens this with `jq` before POSTing to `/callback`, so
   the API always receives a flat `{"name": value}` map (matching what the
   Phase 5 runbook template expects).
-- The shared ECS cluster (`idp-lite-shared`) referenced by
+- The shared ECS cluster (`outpost-shared`) referenced by
   `modules/ecs/main.tf` via a `data` source must exist before the first
   `provision.yml` run — see the bootstrap step added in `terraform/README.md`.
 

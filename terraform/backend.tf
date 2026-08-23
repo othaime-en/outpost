@@ -9,10 +9,10 @@
 # which is exactly what provision.yml / destroy.yml already do:
 #
 #   terraform init \
-#     -backend-config="bucket=idp-lite-tfstate" \
+#     -backend-config="bucket=outpost-tfstate" \
 #     -backend-config="key=envs/<env_id>/terraform.tfstate" \
 #     -backend-config="region=us-east-1" \
-#     -backend-config="dynamodb_table=idp-lite-tflock"
+#     -backend-config="dynamodb_table=outpost-tflock"
 #
 # For local development against a single scratch environment, see
 # terraform/README.md for an equivalent local command.

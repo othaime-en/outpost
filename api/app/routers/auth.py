@@ -279,7 +279,7 @@ def generate_api_key(
     ever persisted — the raw key is returned exactly once. Calling this again
     silently invalidates any previously issued key (only one hash is stored).
     """
-    raw_key = f"idplite_{secrets.token_urlsafe(32)}"
+    raw_key = f"outpost_{secrets.token_urlsafe(32)}"
     current_user.api_key_hash = bcrypt.hash(raw_key)
     db.add(
         AuditLog(

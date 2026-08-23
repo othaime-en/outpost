@@ -1,4 +1,4 @@
-# IDP Lite — Terraform
+# Outpost — Terraform
 
 Provisions one environment's AWS infrastructure: an isolated subnet pair +
 security group, an ECS Fargate service, an RDS Postgres instance, and a
@@ -15,13 +15,13 @@ ever provisioned. It is not managed by this Terraform configuration.
 aws ec2 create-vpc --cidr-block 10.0.0.0/16
 
 # S3 bucket for TF state (versioning required)
-aws s3api create-bucket --bucket idp-lite-tfstate --region us-east-1
-aws s3api put-bucket-versioning --bucket idp-lite-tfstate \
+aws s3api create-bucket --bucket outpost-tfstate --region us-east-1
+aws s3api put-bucket-versioning --bucket outpost-tfstate \
     --versioning-configuration Status=Enabled
 
 # DynamoDB table for state locking
 aws dynamodb create-table \
-    --table-name idp-lite-tflock \
+    --table-name outpost-tflock \
     --attribute-definitions AttributeName=LockID,AttributeType=S \
     --key-schema AttributeName=LockID,KeyType=HASH \
     --billing-mode PAY_PER_REQUEST
@@ -35,11 +35,11 @@ aws iam create-open-id-connect-provider \
 # Shared ECS cluster -- ADDED. The plan's bootstrap list never created this,
 # but modules/ecs/main.tf looks it up via `data "aws_ecs_cluster"`, so it
 # must exist before the first `terraform apply`.
-aws ecs create-cluster --cluster-name idp-lite-shared
+aws ecs create-cluster --cluster-name outpost-shared
 ```
 
 The GitHub Actions IAM role trust policy is unchanged from the plan
-(Section 2.1) — scoped to `repo:YOUR_ORG/idp-lite:*`.
+(Section 2.1) — scoped to `repo:YOUR_ORG/outpost:*`.
 
 ## Local validation (no real AWS calls)
 
@@ -55,10 +55,10 @@ terraform fmt -check -recursive
 ```bash
 cd terraform
 terraform init \
-  -backend-config="bucket=idp-lite-tfstate" \
+  -backend-config="bucket=outpost-tfstate" \
   -backend-config="key=envs/test-local/terraform.tfstate" \
   -backend-config="region=us-east-1" \
-  -backend-config="dynamodb_table=idp-lite-tflock"
+  -backend-config="dynamodb_table=outpost-tflock"
 
 cp terraform.tfvars.example terraform.tfvars   # edit vpc_id, etc.
 terraform plan
@@ -76,7 +76,7 @@ terraform destroy
 | Security group   | Only port 8080 ingress from `10.0.0.0/8`              | Added self-referencing port 5432 ingress; tightened 8080 rule to `10.0.0.0/16` | ECS task otherwise has no path to RDS on 5432; `/8` was broader than the VPC itself            |
 | ECS task role    | Only a custom `secretsmanager:GetSecretValue` policy  | Added AWS-managed `AmazonECSTaskExecutionRolePolicy`                           | Without it, Fargate can't pull the image or write CloudWatch logs — the task would never start |
 | Secret injection | `valueFrom = var.rds_secret_arn` (whole JSON blob)    | `valueFrom = "${secret_arn}:url::"`                                            | Container needs the connection string, not the raw JSON secret                                 |
-| Bootstrap (2.1)  | Didn't create the shared ECS cluster                  | Added `aws ecs create-cluster --cluster-name idp-lite-shared`                  | `data "aws_ecs_cluster"` in the ecs module would fail to resolve otherwise                     |
+| Bootstrap (2.1)  | Didn't create the shared ECS cluster                  | Added `aws ecs create-cluster --cluster-name outpost-shared`                  | `data "aws_ecs_cluster"` in the ecs module would fail to resolve otherwise                     |
 
 Everything else (module boundaries, tagging scheme, naming conventions,
 `db.t3.micro`, `skip_final_snapshot = true`, `deletion_protection = false`,

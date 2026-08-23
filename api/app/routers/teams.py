@@ -2,7 +2,7 @@
 Team Management
 
 DEVIATION FROM THE ORIGINAL PLAN — documented per project convention (see
-IDP_LITE_IMPLEMENTATION_PLAN.md, "Key learnings & principles: deviations
+OUTPOST_IMPLEMENTATION_PLAN.md, "Key learnings & principles: deviations
 from plan should be documented explicitly").
 
 The plan originally specced:

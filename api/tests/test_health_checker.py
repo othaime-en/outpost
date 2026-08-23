@@ -111,7 +111,7 @@ class TestPollOnce:
         )
         env.outputs = {
             "ecs_service_arn": "arn:aws:ecs:us-east-1:123:service/svc",
-            "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123:cluster/idp-lite-shared",
+            "ecs_cluster_arn": "arn:aws:ecs:us-east-1:123:cluster/outpost-shared",
         }
         db_session.commit()
 
@@ -121,7 +121,7 @@ class TestPollOnce:
         assert updated == 1
         mock_check.assert_called_once_with(
             "arn:aws:ecs:us-east-1:123:service/svc",
-            "arn:aws:ecs:us-east-1:123:cluster/idp-lite-shared",
+            "arn:aws:ecs:us-east-1:123:cluster/outpost-shared",
             env.aws_region,
         )
 

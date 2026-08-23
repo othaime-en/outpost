@@ -50,7 +50,7 @@ class TestAPIKeyAuth:
         assert response.json()["id"] == str(user_with_api_key.id)
 
     def test_me_with_wrong_api_key_returns_401(self, client: TestClient, user_with_api_key):
-        response = client.get("/auth/me", headers={"X-API-Key": "idplite_wrong_key"})
+        response = client.get("/auth/me", headers={"X-API-Key": "outpost_wrong_key"})
         assert response.status_code == 401
 
 
@@ -59,7 +59,7 @@ class TestGenerateAPIKey:
         response = client.post("/auth/api-key", headers={"Authorization": f"Bearer {member_token}"})
         assert response.status_code == 200
         body = response.json()
-        assert body["api_key"].startswith("idplite_")
+        assert body["api_key"].startswith("outpost_")
 
     def test_newly_generated_key_authenticates(self, client: TestClient, member_token):
         gen = client.post("/auth/api-key", headers={"Authorization": f"Bearer {member_token}"})

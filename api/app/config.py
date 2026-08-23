@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     github_client_secret: str = ""         # GitHub OAuth app client secret
     github_redirect_uri: str = ""          # Must match what GitHub has registered
     github_token: str = ""                 # Fine-grained PAT for triggering workflows
-    github_repo: str = ""                  # "org/repo" format, e.g. "acme/idp-lite"
+    github_repo: str = ""                  # "org/repo" format, e.g. "acme/outpost"
 
     # --- Frontend ---
     # Where /auth/github/callback redirects the browser after a successful
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # See services/refresh_tokens.py's set_cookie()/clear_cookie() — both
     # read these, so changing an attribute here changes it consistently
     # everywhere the cookie is touched.
-    refresh_cookie_name: str = "idplite_refresh_token"
+    refresh_cookie_name: str = "outpost_refresh_token"
     # True by default. Browsers treat http://localhost as a secure context
     # (per the W3C spec), so `Secure` cookies work fine there in Chrome and
     # Firefox despite no TLS — this does NOT need to be set False for local

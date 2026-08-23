@@ -1,9 +1,9 @@
 """
 CLI Configuration
 
-Reads/writes ~/.idplite/config.yaml. Holds the API endpoint, the transient
-bearer token from `idplite auth login`, and the persistent API key from
-`idplite auth key generate`. Every command other than the auth ones uses the
+Reads/writes ~/.outpost/config.yaml. Holds the API endpoint, the transient
+bearer token from `outpost auth login`, and the persistent API key from
+`outpost auth key generate`. Every command other than the auth ones uses the
 API key day-to-day — the bearer token exists only long enough to mint it.
 """
 
@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import yaml
 
-CONFIG_PATH = Path.home() / ".idplite" / "config.yaml"
+CONFIG_PATH = Path.home() / ".outpost" / "config.yaml"
 
 
 def load_config() -> dict[str, Any]:
