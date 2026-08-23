@@ -21,7 +21,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-8">
             <Link to="/" className="font-mono text-sm font-bold text-gray-900 dark:text-white tracking-wide">
-              IDP&nbsp;Lite
+              OUTPOST
             </Link>
             <nav className="flex items-center gap-1">
               {NAV_LINKS.map((link) => {
@@ -47,18 +47,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <ThemeToggle />
             <span className="text-gray-600 dark:text-gray-400">
               <span className="text-gray-800 dark:text-gray-200 font-mono">{user?.username}</span>
-              {/*
-                MULTI-TEAM CHANGE: this used to show `(${user.role})`, a
-                single flat value. That role is now team-scoped and a user
-                can hold a different one on each of several teams, so
-                there's no single value left to show here — the previous
-                display would have been misleading ("(member)" while
-                actually being team_admin elsewhere). platform_role is
-                still a single global fact, so it's the one thing still
-                worth surfacing in a persistent header — and only when it's
-                the notable case (super_admin). Team-scoped role belongs on
-                that team's own page (see TeamDetail.tsx), not here.
-              */}
               {user?.platform_role === 'super_admin' && (
                 <span className="ml-1.5 text-gray-400 dark:text-gray-600">(super_admin)</span>
               )}
@@ -75,8 +63,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 }
 
 /**
- * Sun/moon icon toggle. Placed in the header. Icons are inline SVG to match the existing
- * pattern in Login.tsx rather than pulling in an icon library for one use.
+ * Sun/moon icon toggle.
  */
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme()
