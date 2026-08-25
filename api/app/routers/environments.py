@@ -3,13 +3,16 @@ Environment Lifecycle Management
 
 This is the core of the application: the state machine driving
 PENDING → PROVISIONING → RUNNING → DESTROYING → DESTROYED (with FAILED as a
-terminal off-ramp from either transition). Every status change here writes
-an audit log row in the same DB transaction — see the `_audit()` helper.
+terminal off-ramp from either transition), plus the EXPIRING/PAUSING/
+PAUSED/RESUMING branch documented below in "GRACE PERIOD & PAUSE SAFETY
+NET". Every status change here writes an audit log row in the same DB
+transaction — see the `_audit()` helper.
 
-Two endpoints — /callback and /expired — are called by GitHub Actions, not
-a logged-in user, and are guarded by `require_callback_secret` (a shared
-header secret) instead of JWT/API-key auth. /cost-preview takes no auth at
-all: it's a read-only pricing calculator, not a query over anything private.
+Three endpoints — /callback, /expired (deprecated, see below), and
+/process-ttl — are called by GitHub Actions, not a logged-in user, and are
+guarded by `require_callback_secret` (a shared header secret) instead of
+JWT/API-key auth. /cost-preview takes no auth at all: it's a read-only
+pricing calculator, not a query over anything private.
 
 DEVIATION FROM THE ORIGINAL PLAN — documented per project convention.
 GET / originally took no query params and always returned every environment
@@ -105,6 +108,83 @@ two paths differ in an important way:
     back long after the row is already closed, and silently overwriting
     DESTROYED back to RUNNING or FAILED would resurrect something the
     caller explicitly closed out from under them.
+
+GRACE PERIOD & PAUSE SAFETY NET — deviation from the original plan,
+documented per project convention. Design discussed and locked in before
+any of this was written; see the conversation history for the full
+brainstorm and rejected alternatives (notify-only, grace-period-without-
+pause).
+
+The original TTL cron simply destroyed any RUNNING environment past its
+expires_at, with zero warning and zero way to stop it. That's fine for
+cost governance and bad for anyone who forgot to extend before stepping
+away from a real piece of unfinished work — there was no path between
+"fully running" and "gone forever." This adds a genuinely reversible
+middle state:
+
+  RUNNING --expires_at passed--> EXPIRING --24h grace period elapses-->
+  PAUSING --callback--> PAUSED --7 days with no resume--> DESTROYING -->
+  DESTROYED (audited as ENV_PAUSE_EXPIRED_DESTROYED, not ENV_DESTROYED)
+
+  EXPIRING --extend TTL--> RUNNING (grace period cancelled)
+  RUNNING or EXPIRING --manual pause, any time--> PAUSING --callback--> PAUSED
+  PAUSED --manual resume--> RESUMING --callback--> RUNNING (fresh TTL window)
+
+  - EXPIRING is a pure DB-state change with NO infrastructure impact — the
+    environment keeps running exactly as before during the 24h
+    (settings.expiring_grace_period_hours) grace period. Extending the TTL
+    from here cancels the grace period and returns to RUNNING outright
+    (see extend_ttl()'s ENV_EXTENDED_FROM_EXPIRING branch).
+
+  - PAUSING/PAUSED means the ECS service is scaled to 0 and the RDS
+    instance is stopped — reversible, and cheap, but not literally free
+    (RDS storage is still billed, and AWS force-restarts a stopped RDS
+    instance after 7 days regardless of anyone's intent; the TTL cron's
+    process_ttl() sweep is expected to re-stop it if that happens — see
+    the pending Terraform/GitHub-Actions batch note below). This is why
+    PAUSED still has its own independent 7-day (settings.paused_max_days)
+    expiry rather than being able to sit paused forever — pausing
+    relocates the cost-governance problem, it doesn't eliminate it.
+
+  - Manual pause (POST /{env_id}/pause) is available any time from RUNNING
+    or EXPIRING, not just as the automatic fallback the cron applies after
+    the grace period lapses — see PAUSABLE_STATUSES.
+
+  - A paused environment's `expires_at`/`ttl_hours` are left untouched
+    while paused. Resuming (POST /{env_id}/resume) grants a genuinely
+    fresh TTL window rather than resuming into an environment that's
+    already (or nearly) expired again.
+
+  - environment_callback()'s RUNNING branch now has to distinguish two
+    different prior states: PROVISIONING (an ordinary `terraform apply`
+    just finished — outputs get written) vs. RESUMING (ECS/RDS were just
+    started back up, no new Terraform outputs exist to report, and
+    overwriting env.outputs from an empty body would silently destroy the
+    real endpoints/ARNs recorded at original provision time). Told apart
+    by env.status *before* this call, not by anything in the callback body
+    itself — GitHub Actions doesn't need to know or care which case it is.
+
+  - Notifications (see services/notifications.py) fire at three points:
+    entering EXPIRING, entering PAUSED, and ~48h before a paused
+    environment's final destroy. Delivery is stubbed to structured logging
+    only for now — no Slack/email channel is configured in this project
+    yet; see that module's docstring for the swap-in seam when one is.
+
+  - New audit actions: ENV_EXPIRING, ENV_EXTENDED_FROM_EXPIRING,
+    ENV_PAUSE_REQUESTED, ENV_PAUSED, ENV_RESUME_REQUESTED, ENV_RESUMED,
+    ENV_PAUSE_EXPIRED_DESTROYED. See models/audit_log.py.
+
+  - GET /expired is now DEPRECATED in favor of POST /process-ttl below,
+    which does all three sweeps (RUNNING->EXPIRING, EXPIRING->PAUSING,
+    PAUSED->DESTROYING) as one state-machine-aware call instead of the
+    single unconditional RUNNING-past-expires_at query /expired used to
+    run. /expired is left in place, unchanged, rather than deleted
+    outright, because .github/workflows/ttl-cron.yml — which currently
+    calls it — hasn't been updated to call /process-ttl yet. That update,
+    together with the new pause.yml/resume.yml workflow files and the
+    Terraform changes for ECS scale-to-zero / RDS stop-start, is the next
+    batch of work; nothing in this file's diff touches ttl-cron.yml or the
+    Terraform modules. Once that lands, /expired should be deleted.
 """
 
 from __future__ import annotations
@@ -116,6 +196,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import settings
 from app.database import get_db
 from app.middleware.auth import get_current_user
 from app.middleware.rbac import has_team_role, require_callback_secret, team_role
@@ -138,16 +219,21 @@ from app.schemas.environment import (
     ExpiredEnvironmentResponse,
     ExtendTTLRequest,
     ExtendTTLResponse,
+    ProcessTTLResponse,
+    ProcessTTLTarget,
     RunbookResponse,
 )
-from app.services import cost, terraform
+from app.services import cost, notifications, terraform
 from app.services import runbook as runbook_service
 
 router = APIRouter()
 
 # Terminal-ish statuses a real destroy (RUNNING/FAILED -> DESTROYING ->
-# callback -> DESTROYED) can be triggered from.
-DESTROYABLE_STATUSES = ("RUNNING", "FAILED")
+# callback -> DESTROYED) can be triggered from. Widened to also include
+# EXPIRING and PAUSED — see this module's docstring, "GRACE PERIOD & PAUSE
+# SAFETY NET" — so a user who doesn't want to go through pause at all can
+# still just destroy directly from either of those states.
+DESTROYABLE_STATUSES = ("RUNNING", "FAILED", "EXPIRING", "PAUSED")
 
 # PENDING can also be closed via DELETE /{env_id}, but goes straight to
 # DESTROYED with no DESTROYING wait — see this module's docstring, section
@@ -156,10 +242,31 @@ DESTROYABLE_STATUSES = ("RUNNING", "FAILED")
 # that tuple.
 CANCELLABLE_STATUSES = ("PENDING",)
 
+# States POST /{env_id}/pause may be triggered from — see "GRACE PERIOD &
+# PAUSE SAFETY NET" above. Manual pause works from EXPIRING too, not just
+# RUNNING; there's no reason to force someone into the automatic-pause path
+# just because their grace period already started.
+PAUSABLE_STATUSES = ("RUNNING", "EXPIRING")
+
+# States POST /{env_id}/resume may be triggered from.
+RESUMABLE_STATUSES = ("PAUSED",)
+
 # All valid values for the environment state machine. Used to validate the
 # `status` filter query param — anything outside this set is a client error,
-# not a query that should just silently return nothing.
-VALID_ENV_STATUSES = {"PENDING", "PROVISIONING", "RUNNING", "DESTROYING", "DESTROYED", "FAILED"}
+# not a query that should just silently return nothing. EXPIRING, PAUSING,
+# PAUSED, RESUMING added alongside the grace-period/pause safety net.
+VALID_ENV_STATUSES = {
+    "PENDING",
+    "PROVISIONING",
+    "RUNNING",
+    "EXPIRING",
+    "PAUSING",
+    "PAUSED",
+    "RESUMING",
+    "DESTROYING",
+    "DESTROYED",
+    "FAILED",
+}
 VALID_HEALTH_STATUSES = {"HEALTHY", "DEGRADED", "UNKNOWN"}
 
 # Whitelisted sort columns — deliberately not a free-form column name, to
@@ -216,6 +323,9 @@ def _environment_response(env: Environment) -> EnvironmentResponse:
         cost_estimate_usd=float(env.cost_estimate_usd) if env.cost_estimate_usd is not None else None,
         created_at=env.created_at.isoformat(),
         destroyed_at=env.destroyed_at.isoformat() if env.destroyed_at else None,
+        expiring_since=env.expiring_since.isoformat() if env.expiring_since else None,
+        paused_at=env.paused_at.isoformat() if env.paused_at else None,
+        pause_expires_at=env.pause_expires_at.isoformat() if env.pause_expires_at else None,
     )
 
 
@@ -242,6 +352,22 @@ def _assert_team_visibility(env: Environment, current_user: User) -> None:
         raise HTTPException(status_code=403, detail="Not your team's environment")
 
 
+def _assert_can_act_on_env(env: Environment, current_user: User) -> None:
+    """
+    Shared RBAC check for destroy/pause/resume — identical shape in all
+    three: no membership on this team (and not super_admin) -> can't act at
+    all; member on this team -> own envs only; team_admin on this team /
+    super_admin -> any env on the team.
+    """
+    is_super = current_user.platform_role == "super_admin"
+    role = team_role(current_user, env.team_id)
+
+    if role is None and not is_super:
+        raise HTTPException(status_code=403, detail="You are not a member of this environment's team")
+    if role == "member" and str(env.created_by) != str(current_user.id) and not is_super:
+        raise HTTPException(status_code=403, detail="You can only act on your own environments")
+
+
 # --- Cost preview (no auth — pure calculator) ---------------------------
 
 
@@ -257,6 +383,15 @@ def cost_preview(env_type: str = "dev"):
 
 @router.get("/expired", response_model=list[ExpiredEnvironmentResponse])
 def get_expired(db: Session = Depends(get_db), _=Depends(require_callback_secret)):
+    """
+    DEPRECATED — superseded by POST /process-ttl below. See this module's
+    docstring, "GRACE PERIOD & PAUSE SAFETY NET", for why: this only ever
+    handled a single RUNNING -> destroy transition with zero grace period,
+    which is exactly the behavior that feature replaces. Left in place,
+    unchanged, only because ttl-cron.yml still calls it as of this change —
+    scheduled for deletion once that workflow is updated to call
+    /process-ttl instead.
+    """
     now = datetime.now(timezone.utc)
     expired = (
         db.query(Environment)
@@ -267,6 +402,158 @@ def get_expired(db: Session = Depends(get_db), _=Depends(require_callback_secret
         ExpiredEnvironmentResponse(env_id=str(e.id), name=e.name, team=e.team.slug)
         for e in expired
     ]
+
+
+@router.post("/process-ttl", response_model=ProcessTTLResponse)
+def process_ttl(db: Session = Depends(get_db), _=Depends(require_callback_secret)):
+    """
+    Single entry point the TTL cron calls every 15 minutes. Does ALL of the
+    grace-period/pause state-machine reasoning here, in the API — the one
+    source of truth for the state machine — rather than encoding transition
+    rules in ttl-cron.yml's shell script. The cron workflow's only
+    remaining job (next batch of work) is: call this, then dispatch
+    pause.yml / destroy.yml for whatever env_ids come back in `to_pause` /
+    `to_destroy`.
+
+    Three independent sweeps, each committed as it goes so a failure partway
+    through doesn't roll back sweeps that already succeeded:
+
+      1. RUNNING + expires_at passed -> EXPIRING. Pure DB mutation, no
+         workflow dispatch — infrastructure keeps running unchanged during
+         the grace period. Fires an ENV_EXPIRING notification.
+
+      2. EXPIRING + grace period (settings.expiring_grace_period_hours)
+         elapsed since expiring_since -> PAUSING. Returned in `to_pause`
+         for the cron to dispatch pause.yml against.
+
+      3. PAUSED + pause window (settings.paused_max_days) elapsed since
+         paused_at -> DESTROYING. Returned in `to_destroy` for the cron to
+         dispatch destroy.yml against, with actor="cron_pause_expired" so
+         environment_callback() logs ENV_PAUSE_EXPIRED_DESTROYED instead of
+         an ordinary ENV_DESTROYED — this destroy was never requested by a
+         human and was preceded by two separate advance warnings, which is
+         worth keeping distinguishable in the audit trail.
+
+    A fourth, best-effort pass fires the "will be destroyed soon" warning
+    (~48h out) for PAUSED environments approaching their final destroy,
+    gated by pause_expiry_warning_sent_at so it fires once, not on every
+    15-minute pass.
+
+    Supersedes GET /environments/expired — see that endpoint's now-updated
+    docstring.
+    """
+    now = datetime.now(timezone.utc)
+    notifier = notifications.get_notification_service()
+
+    # --- Sweep 1: RUNNING -> EXPIRING ---
+    transitioned_to_expiring: list[str] = []
+    newly_expiring = (
+        db.query(Environment)
+        .options(joinedload(Environment.team), joinedload(Environment.creator))
+        .filter(Environment.status == "RUNNING", Environment.expires_at < now)
+        .all()
+    )
+    for env in newly_expiring:
+        env.status = "EXPIRING"
+        env.expiring_since = now
+        _audit(
+            db,
+            action="ENV_EXPIRING",
+            environment_id=env.id,
+            actor_type="cron",
+            metadata={"expires_at": env.expires_at.isoformat()},
+        )
+        transitioned_to_expiring.append(str(env.id))
+        notifier.notify(
+            notifications.NotificationEvent.ENV_EXPIRING,
+            notifications.NotificationContext(
+                env_id=str(env.id),
+                env_name=env.name,
+                team_slug=env.team.slug,
+                created_by_username=env.creator.username,
+                detail=(
+                    f"grace period started — auto-pauses in "
+                    f"{settings.expiring_grace_period_hours}h unless extended"
+                ),
+            ),
+        )
+    db.commit()
+
+    # --- Sweep 2: EXPIRING -> PAUSING (grace period lapsed) ---
+    to_pause: list[ProcessTTLTarget] = []
+    grace_cutoff = now - timedelta(hours=settings.expiring_grace_period_hours)
+    grace_lapsed = (
+        db.query(Environment)
+        .filter(Environment.status == "EXPIRING", Environment.expiring_since < grace_cutoff)
+        .all()
+    )
+    for env in grace_lapsed:
+        env.status = "PAUSING"
+        _audit(
+            db,
+            action="ENV_PAUSE_REQUESTED",
+            environment_id=env.id,
+            actor_type="cron",
+            metadata={"reason": "grace_period_elapsed"},
+        )
+        to_pause.append(ProcessTTLTarget(env_id=str(env.id), region=env.aws_region))
+    db.commit()
+
+    # --- Sweep 3: PAUSED -> DESTROYING (pause window lapsed) ---
+    to_destroy: list[ProcessTTLTarget] = []
+    paused_expired = (
+        db.query(Environment)
+        .filter(Environment.status == "PAUSED", Environment.pause_expires_at < now)
+        .all()
+    )
+    for env in paused_expired:
+        env.status = "DESTROYING"
+        _audit(
+            db,
+            action="ENV_DESTROY_REQUESTED",
+            environment_id=env.id,
+            actor_type="cron",
+            metadata={
+                "reason": "pause_window_elapsed",
+                "paused_at": env.paused_at.isoformat() if env.paused_at else None,
+            },
+        )
+        to_destroy.append(ProcessTTLTarget(env_id=str(env.id), region=env.aws_region))
+    db.commit()
+
+    # --- Sweep 4: PAUSED nearing final destroy -> one-time warning ---
+    warning_cutoff = now + timedelta(hours=48)
+    nearing_destroy = (
+        db.query(Environment)
+        .options(joinedload(Environment.team), joinedload(Environment.creator))
+        .filter(
+            Environment.status == "PAUSED",
+            Environment.pause_expires_at < warning_cutoff,
+            Environment.pause_expires_at >= now,
+            Environment.pause_expiry_warning_sent_at.is_(None),
+        )
+        .all()
+    )
+    for env in nearing_destroy:
+        env.pause_expiry_warning_sent_at = now
+        hours_left = max(0, int((env.pause_expires_at - now).total_seconds() // 3600))
+        notifier.notify(
+            notifications.NotificationEvent.ENV_PAUSE_EXPIRING_SOON,
+            notifications.NotificationContext(
+                env_id=str(env.id),
+                env_name=env.name,
+                team_slug=env.team.slug,
+                created_by_username=env.creator.username,
+                detail=f"paused environment will be permanently destroyed in ~{hours_left}h unless resumed",
+            ),
+        )
+    db.commit()
+
+    return ProcessTTLResponse(
+        transitioned_to_expiring=transitioned_to_expiring,
+        to_pause=to_pause,
+        to_destroy=to_destroy,
+    )
 
 
 # --- Core CRUD ------------------------------------------------------------
@@ -460,18 +747,9 @@ def destroy_environment(
             detail=f"Cannot destroy environment with status: {env.status}",
         )
 
-    # RBAC, scoped to THIS environment's team specifically — identical for
-    # both the real-destroy and cancel-a-PENDING paths below:
-    #   no membership on this team (and not super_admin) -> can't act at all
-    #   member on this team                               -> own envs only
-    #   team_admin on this team / super_admin              -> any env on the team
-    is_super = current_user.platform_role == "super_admin"
-    role = team_role(current_user, env.team_id)
-
-    if role is None and not is_super:
-        raise HTTPException(status_code=403, detail="You are not a member of this environment's team")
-    if role == "member" and str(env.created_by) != str(current_user.id) and not is_super:
-        raise HTTPException(status_code=403, detail="You can only destroy your own environments")
+    # RBAC, scoped to THIS environment's team specifically — see
+    # _assert_can_act_on_env()'s docstring.
+    _assert_can_act_on_env(env, current_user)
 
     if env.status in CANCELLABLE_STATUSES:
         # See this module's docstring, "CANCELLING A PENDING ENVIRONMENT" —
@@ -507,19 +785,93 @@ def destroy_environment(
         response.status_code = status.HTTP_200_OK
         return CreateEnvironmentResponse(env_id=str(env.id), status="DESTROYED")
 
+    was_paused = env.status == "PAUSED"
     env.status = "DESTROYING"
     _audit(
         db,
         action="ENV_DESTROY_REQUESTED",
         environment_id=env.id,
         actor_id=current_user.id,
-        metadata={"triggered_by": current_user.username},
+        metadata={"triggered_by": current_user.username, "destroyed_from_status": "PAUSED" if was_paused else None},
     )
     db.commit()
 
     terraform.trigger_destroy(str(env.id), env.aws_region, actor=current_user.username)
 
     return CreateEnvironmentResponse(env_id=str(env.id), status="DESTROYING")
+
+
+@router.post("/{env_id}/pause", response_model=CreateEnvironmentResponse, status_code=status.HTTP_202_ACCEPTED)
+def pause_environment(
+    env_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Manual pause — see this module's docstring, "GRACE PERIOD & PAUSE
+    SAFETY NET". Available any time from RUNNING or EXPIRING, not just as
+    the automatic fallback process_ttl() applies once the grace period
+    lapses. Same RBAC shape as destroy_environment().
+    """
+    env = _get_env_or_404(db, env_id)
+
+    if env.status not in PAUSABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot pause environment with status: {env.status}",
+        )
+
+    _assert_can_act_on_env(env, current_user)
+
+    env.status = "PAUSING"
+    _audit(
+        db,
+        action="ENV_PAUSE_REQUESTED",
+        environment_id=env.id,
+        actor_id=current_user.id,
+        metadata={"triggered_by": current_user.username, "reason": "manual"},
+    )
+    db.commit()
+
+    terraform.trigger_pause(str(env.id), env.aws_region, actor=current_user.username)
+
+    return CreateEnvironmentResponse(env_id=str(env.id), status="PAUSING")
+
+
+@router.post("/{env_id}/resume", response_model=CreateEnvironmentResponse, status_code=status.HTTP_202_ACCEPTED)
+def resume_environment(
+    env_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Resume from PAUSED only. TTL resets to a fresh full window on success
+    (see environment_callback()'s RESUMING branch) — a paused environment
+    shouldn't come back already partway, or fully, expired again.
+    """
+    env = _get_env_or_404(db, env_id)
+
+    if env.status not in RESUMABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume environment with status: {env.status}",
+        )
+
+    _assert_can_act_on_env(env, current_user)
+
+    env.status = "RESUMING"
+    _audit(
+        db,
+        action="ENV_RESUME_REQUESTED",
+        environment_id=env.id,
+        actor_id=current_user.id,
+        metadata={"triggered_by": current_user.username},
+    )
+    db.commit()
+
+    terraform.trigger_resume(str(env.id), env.aws_region, actor=current_user.username)
+
+    return CreateEnvironmentResponse(env_id=str(env.id), status="RESUMING")
 
 
 @router.patch("/{env_id}/ttl", response_model=ExtendTTLResponse)
@@ -532,22 +884,34 @@ def extend_ttl(
     env = _get_env_or_404(db, env_id)
     _assert_team_visibility(env, current_user)
 
-    if env.status != "RUNNING":
-        raise HTTPException(status_code=400, detail="Can only extend TTL of RUNNING environments")
+    if env.status not in ("RUNNING", "EXPIRING"):
+        raise HTTPException(
+            status_code=400, detail="Can only extend TTL of RUNNING or EXPIRING environments"
+        )
+
+    # Extending from EXPIRING cancels the grace period outright and returns
+    # to RUNNING — see this module's docstring, "GRACE PERIOD & PAUSE
+    # SAFETY NET".
+    was_expiring = env.status == "EXPIRING"
 
     old_expires_at = env.expires_at
     env.expires_at = env.expires_at + timedelta(hours=body.extend_hours)
     env.ttl_hours += body.extend_hours
 
+    if was_expiring:
+        env.status = "RUNNING"
+        env.expiring_since = None
+
     _audit(
         db,
-        action="TTL_EXTENDED",
+        action="ENV_EXTENDED_FROM_EXPIRING" if was_expiring else "TTL_EXTENDED",
         environment_id=env.id,
         actor_id=current_user.id,
         metadata={
             "old_expires_at": old_expires_at.isoformat(),
             "new_expires_at": env.expires_at.isoformat(),
             "extended_by_hours": body.extend_hours,
+            **({"cancelled_grace_period": True} if was_expiring else {}),
         },
     )
     db.commit()
@@ -586,26 +950,85 @@ def environment_callback(
         db.commit()
         return {"ok": True, "ignored": True}
 
+    prior_status = env.status
     env.status = body.status
 
     if body.status == "RUNNING":
-        env.outputs = body.outputs or {}
-        _audit(db, action="ENV_RUNNING", environment_id=env.id, actor_type="system")
-
-        content = runbook_service.generate(env, env.outputs)
-        existing = db.query(Runbook).filter(Runbook.environment_id == env.id).first()
-        if existing:
-            existing.content_md = content
-            existing.generated_at = datetime.now(timezone.utc)
+        if prior_status == "RESUMING":
+            # Resume completed — see this module's docstring, "GRACE
+            # PERIOD & PAUSE SAFETY NET". Outputs are deliberately left
+            # untouched: resume.yml doesn't re-run `terraform apply`, so
+            # body.outputs is expected to be empty, and overwriting
+            # env.outputs here the way the PROVISIONING branch below does
+            # would wipe out the real endpoints/ARNs recorded at original
+            # provision time.
+            env.paused_at = None
+            env.pause_expires_at = None
+            env.pause_expiry_warning_sent_at = None
+            env.expiring_since = None
+            env.expires_at = datetime.now(timezone.utc) + timedelta(hours=env.ttl_hours)
+            _audit(
+                db,
+                action="ENV_RESUMED",
+                environment_id=env.id,
+                actor_type="system",
+                metadata={"new_expires_at": env.expires_at.isoformat()},
+            )
         else:
-            db.add(Runbook(environment_id=env.id, content_md=content))
+            # Ordinary PROVISIONING -> RUNNING completion — unchanged.
+            env.outputs = body.outputs or {}
+            _audit(db, action="ENV_RUNNING", environment_id=env.id, actor_type="system")
+
+            content = runbook_service.generate(env, env.outputs)
+            existing = db.query(Runbook).filter(Runbook.environment_id == env.id).first()
+            if existing:
+                existing.content_md = content
+                existing.generated_at = datetime.now(timezone.utc)
+            else:
+                db.add(Runbook(environment_id=env.id, content_md=content))
+
+    elif body.status == "PAUSED":
+        # PAUSING -> PAUSED, confirmed by pause.yml. See this module's
+        # docstring, "GRACE PERIOD & PAUSE SAFETY NET", for why this is a
+        # distinct, reversible alternative to a real destroy rather than
+        # reusing the DESTROYING/DESTROYED path.
+        env.paused_at = datetime.now(timezone.utc)
+        env.pause_expires_at = env.paused_at + timedelta(days=settings.paused_max_days)
+        env.pause_expiry_warning_sent_at = None
+        _audit(
+            db,
+            action="ENV_PAUSED",
+            environment_id=env.id,
+            actor_type="system",
+            metadata={"pause_expires_at": env.pause_expires_at.isoformat()},
+        )
+        notifications.get_notification_service().notify(
+            notifications.NotificationEvent.ENV_PAUSED,
+            notifications.NotificationContext(
+                env_id=str(env.id),
+                env_name=env.name,
+                team_slug=env.team.slug,
+                created_by_username=env.creator.username,
+                detail=f"paused — will be destroyed in {settings.paused_max_days}d unless resumed",
+            ),
+        )
 
     elif body.status == "DESTROYED":
         env.destroyed_at = datetime.now(timezone.utc)
-        actor_type = "cron" if body.actor == "cron" else "user"
+        if body.actor == "cron_pause_expired":
+            # See process_ttl()'s Sweep 3 — this destroy was never
+            # requested by a human and was preceded by two separate
+            # advance warnings (entering EXPIRING, entering PAUSED), which
+            # is worth keeping distinguishable from an ordinary
+            # ENV_DESTROYED in the audit trail.
+            action = "ENV_PAUSE_EXPIRED_DESTROYED"
+            actor_type = "cron"
+        else:
+            action = "ENV_DESTROYED"
+            actor_type = "cron" if body.actor == "cron" else "user"
         _audit(
             db,
-            action="ENV_DESTROYED",
+            action=action,
             environment_id=env.id,
             actor_type=actor_type,
             metadata={"actor": body.actor},
@@ -617,7 +1040,7 @@ def environment_callback(
             action="ENV_FAILED",
             environment_id=env.id,
             actor_type="system",
-            metadata={"error": body.error},
+            metadata={"error": body.error, "prior_status": prior_status},
         )
 
     # Status update + audit log (+ runbook, when applicable) committed
