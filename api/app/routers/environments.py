@@ -8,11 +8,11 @@ PAUSED/RESUMING branch documented below in "GRACE PERIOD & PAUSE SAFETY
 NET". Every status change here writes an audit log row in the same DB
 transaction — see the `_audit()` helper.
 
-Three endpoints — /callback, /expired (deprecated, see below), and
-/process-ttl — are called by GitHub Actions, not a logged-in user, and are
-guarded by `require_callback_secret` (a shared header secret) instead of
-JWT/API-key auth. /cost-preview takes no auth at all: it's a read-only
-pricing calculator, not a query over anything private.
+Two endpoints — /callback and /process-ttl — are called by GitHub Actions,
+not a logged-in user, and are guarded by `require_callback_secret` (a
+shared header secret) instead of JWT/API-key auth. /cost-preview takes no
+auth at all: it's a read-only pricing calculator, not a query over
+anything private.
 
 DEVIATION FROM THE ORIGINAL PLAN — documented per project convention.
 GET / originally took no query params and always returned every environment
@@ -174,17 +174,13 @@ middle state:
     ENV_PAUSE_REQUESTED, ENV_PAUSED, ENV_RESUME_REQUESTED, ENV_RESUMED,
     ENV_PAUSE_EXPIRED_DESTROYED. See models/audit_log.py.
 
-  - GET /expired is now DEPRECATED in favor of POST /process-ttl below,
+    - GET /expired has been REMOVED, superseded by POST /process-ttl below,
     which does all three sweeps (RUNNING->EXPIRING, EXPIRING->PAUSING,
     PAUSED->DESTROYING) as one state-machine-aware call instead of the
     single unconditional RUNNING-past-expires_at query /expired used to
-    run. /expired is left in place, unchanged, rather than deleted
-    outright, because .github/workflows/ttl-cron.yml — which currently
-    calls it — hasn't been updated to call /process-ttl yet. That update,
-    together with the new pause.yml/resume.yml workflow files and the
-    Terraform changes for ECS scale-to-zero / RDS stop-start, is the next
-    batch of work; nothing in this file's diff touches ttl-cron.yml or the
-    Terraform modules. Once that lands, /expired should be deleted.
+    run. .github/workflows/ttl-cron.yml now calls /process-ttl instead —
+    see that file and .github/workflows/pause.yml/resume.yml, added in
+    the same change, for the GitHub Actions side of this feature.
 """
 
 from __future__ import annotations
@@ -216,7 +212,6 @@ from app.schemas.environment import (
     CreateEnvironmentResponse,
     EnvironmentListResponse,
     EnvironmentResponse,
-    ExpiredEnvironmentResponse,
     ExtendTTLRequest,
     ExtendTTLResponse,
     ProcessTTLResponse,
@@ -379,30 +374,6 @@ def cost_preview(env_type: str = "dev"):
 
 
 # --- TTL cron support (callback-secret auth) -----------------------------
-
-
-@router.get("/expired", response_model=list[ExpiredEnvironmentResponse])
-def get_expired(db: Session = Depends(get_db), _=Depends(require_callback_secret)):
-    """
-    DEPRECATED — superseded by POST /process-ttl below. See this module's
-    docstring, "GRACE PERIOD & PAUSE SAFETY NET", for why: this only ever
-    handled a single RUNNING -> destroy transition with zero grace period,
-    which is exactly the behavior that feature replaces. Left in place,
-    unchanged, only because ttl-cron.yml still calls it as of this change —
-    scheduled for deletion once that workflow is updated to call
-    /process-ttl instead.
-    """
-    now = datetime.now(timezone.utc)
-    expired = (
-        db.query(Environment)
-        .filter(Environment.status == "RUNNING", Environment.expires_at < now)
-        .all()
-    )
-    return [
-        ExpiredEnvironmentResponse(env_id=str(e.id), name=e.name, team=e.team.slug)
-        for e in expired
-    ]
-
 
 @router.post("/process-ttl", response_model=ProcessTTLResponse)
 def process_ttl(db: Session = Depends(get_db), _=Depends(require_callback_secret)):
