@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # --- Business rules ---
     max_ttl_hours: int = 168               # 7 days
 
+    # --- Grace period & pause (TTL safety net) ---
+    # See routers/environments.py's module docstring, "GRACE PERIOD & PAUSE
+    # SAFETY NET", for the full design and why these live here as global
+    # platform constants rather than per-environment overrides — same
+    # simplicity trade-off already made for max_ttl_hours above.
+    expiring_grace_period_hours: int = 24  # RUNNING -> EXPIRING -> (this many hours) -> PAUSING
+    paused_max_days: int = 7               # PAUSED -> (this many days) -> DESTROYING, for real
+
     class Config:
         env_file = ".env"
 
