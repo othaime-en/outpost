@@ -1,6 +1,16 @@
 import type { EnvironmentFilters, EnvStatus, EnvType, HealthStatus, Team } from '../api/client'
 
-const STATUS_OPTIONS: EnvStatus[] = ['PENDING', 'PROVISIONING', 'RUNNING', 'DESTROYING', 'FAILED']
+const STATUS_OPTIONS: EnvStatus[] = [
+  'PENDING',
+  'PROVISIONING',
+  'RUNNING',
+  'EXPIRING',
+  'PAUSING',
+  'PAUSED',
+  'RESUMING',
+  'DESTROYING',
+  'FAILED',
+]
 const EXPIRY_OPTIONS: { label: string; hours: number | undefined }[] = [
   { label: 'Any time', hours: undefined },
   { label: '< 2h', hours: 2 },
