@@ -81,6 +81,8 @@ export default function Dashboard() {
               env={env}
               onDestroy={actions.promptDestroy}
               onExtend={actions.promptExtend}
+              onPause={actions.promptPause}
+              onResume={actions.resume}
             />
           ))}
         </div>
