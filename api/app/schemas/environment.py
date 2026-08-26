@@ -8,10 +8,13 @@ one. The router validates this against the caller's actual memberships via
 has_team_role() — passing an arbitrary team_id is rejected with 403, not
 silently accepted.
 
-CallbackRequest.status is deliberately restricted to the three values
-GitHub Actions can ever POST back (RUNNING / DESTROYED / FAILED) — PENDING,
-PROVISIONING, and DESTROYING are states the API itself sets before or while
-dispatching a workflow, never values a callback should be allowed to set.
+CallbackRequest.status covers every value GitHub Actions can ever POST
+back: RUNNING (provision.yml completing, OR resume.yml completing — the
+router tells the two apart by the environment's prior status, not by this
+field), PAUSED (pause.yml completing), DESTROYED, and FAILED. PENDING,
+PROVISIONING, EXPIRING, PAUSING, DESTROYING, and RESUMING are states the
+API itself sets before or while dispatching a workflow, never values a
+callback should be allowed to set directly.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 
 NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
 VALID_ENV_TYPES = {"dev", "staging"}
-VALID_CALLBACK_STATUSES = {"RUNNING", "DESTROYED", "FAILED"}
+VALID_CALLBACK_STATUSES = {"RUNNING", "PAUSED", "DESTROYED", "FAILED"}
 
 
 class CreateEnvironmentRequest(BaseModel):
@@ -94,12 +97,35 @@ class EnvironmentResponse(BaseModel):
     cost_estimate_usd: Optional[float] = None
     created_at: str
     destroyed_at: Optional[str] = None
+    # --- Grace period & pause — see routers/environments.py's module
+    # docstring, "GRACE PERIOD & PAUSE SAFETY NET" ---
+    expiring_since: Optional[str] = None
+    paused_at: Optional[str] = None
+    pause_expires_at: Optional[str] = None
 
 
 class ExpiredEnvironmentResponse(BaseModel):
     env_id: str
     name: str
     team: str
+
+
+class ProcessTTLTarget(BaseModel):
+    env_id: str
+    region: str
+
+
+class ProcessTTLResponse(BaseModel):
+    """
+    Returned by POST /environments/process-ttl. The endpoint has already
+    updated each environment's DB status by the time it returns —
+    `to_pause`/`to_destroy` are just the env_ids (+region) the caller
+    (ttl-cron.yml) still needs to dispatch a workflow for. See that
+    endpoint's docstring for the three sweeps this summarizes.
+    """
+    transitioned_to_expiring: List[str]
+    to_pause: List[ProcessTTLTarget]
+    to_destroy: List[ProcessTTLTarget]
 
 
 class RunbookResponse(BaseModel):

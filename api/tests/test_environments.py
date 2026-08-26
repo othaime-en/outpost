@@ -23,12 +23,13 @@ from app.services import terraform
 @pytest.fixture
 def mock_terraform(monkeypatch):
     """
-    Replaces services.terraform.trigger_provision/trigger_destroy with
-    recording stand-ins. The router calls these via the `terraform` module
-    object (not a direct function import), so patching the module's
-    attributes here is visible to the router without touching its code.
+    Replaces services.terraform.trigger_provision/trigger_destroy/
+    trigger_pause/trigger_resume with recording stand-ins. The router calls
+    these via the `terraform` module object (not a direct function import),
+    so patching the module's attributes here is visible to the router
+    without touching its code.
     """
-    calls = {"provision": [], "destroy": []}
+    calls = {"provision": [], "destroy": [], "pause": [], "resume": []}
 
     def fake_provision(**kwargs):
         calls["provision"].append(kwargs)
@@ -36,8 +37,16 @@ def mock_terraform(monkeypatch):
     def fake_destroy(*args, **kwargs):
         calls["destroy"].append({"args": args, "kwargs": kwargs})
 
+    def fake_pause(*args, **kwargs):
+        calls["pause"].append({"args": args, "kwargs": kwargs})
+
+    def fake_resume(*args, **kwargs):
+        calls["resume"].append({"args": args, "kwargs": kwargs})
+
     monkeypatch.setattr(terraform, "trigger_provision", fake_provision)
     monkeypatch.setattr(terraform, "trigger_destroy", fake_destroy)
+    monkeypatch.setattr(terraform, "trigger_pause", fake_pause)
+    monkeypatch.setattr(terraform, "trigger_resume", fake_resume)
     return calls
 
 
@@ -595,6 +604,187 @@ class TestDestroyEnvironment:
         response = client.delete(f"/environments/{env.id}", headers=_auth(user_on_two_teams_token))
         assert response.status_code == 202
 
+    def test_expiring_environment_can_be_destroyed_directly(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        """DESTROYABLE_STATUSES was widened to include EXPIRING — see
+        routers/environments.py's module docstring, 'GRACE PERIOD & PAUSE
+        SAFETY NET'. A user shouldn't be forced through the pause flow if
+        they'd rather just destroy directly."""
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        response = client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+        assert response.status_code == 202
+        assert response.json()["status"] == "DESTROYING"
+
+    def test_paused_environment_can_be_destroyed_directly(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=1),
+            pause_expires_at=datetime.now(timezone.utc) + timedelta(days=6),
+        )
+        response = client.delete(f"/environments/{env.id}", headers=_auth(member_token))
+        assert response.status_code == 202
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYING"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_DESTROY_REQUESTED")
+            .first()
+        )
+        assert audit is not None
+        assert audit.event_metadata["destroyed_from_status"] == "PAUSED"
+
+
+class TestPauseEnvironment:
+    """POST /environments/{id}/pause — manual pause, available from RUNNING
+    or EXPIRING. See routers/environments.py's module docstring, 'GRACE
+    PERIOD & PAUSE SAFETY NET'."""
+
+    def test_requires_auth(self, client: TestClient):
+        assert client.post(f"/environments/{uuid.uuid4()}/pause").status_code == 401
+
+    def test_pause_from_running_succeeds(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 202
+        assert response.json()["status"] == "PAUSING"
+
+        db_session.refresh(env)
+        assert env.status == "PAUSING"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_PAUSE_REQUESTED")
+            .first()
+        )
+        assert audit is not None
+        assert audit.event_metadata["reason"] == "manual"
+        assert len(mock_terraform["pause"]) == 1
+
+    def test_pause_from_expiring_succeeds(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        """Manual pause works from EXPIRING too, not just RUNNING — there's
+        no reason to force someone through the automatic-pause path just
+        because their grace period already started."""
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 202
+
+        db_session.refresh(env)
+        assert env.status == "PAUSING"
+
+    def test_pause_from_pending_is_rejected(
+        self, client: TestClient, member_user, member_token, test_team, make_environment,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PENDING")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 400
+
+    def test_pause_from_already_paused_is_rejected(
+        self, client: TestClient, member_user, member_token, test_team, make_environment,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PAUSED")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 400
+
+    def test_member_cannot_pause_teammates_environment(
+        self, client: TestClient, member_token, team_admin_user, test_team,
+        make_environment, mock_terraform,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=team_admin_user.id, status="RUNNING")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 403
+
+    def test_team_admin_can_pause_any_team_environment(
+        self, client: TestClient, team_admin_token, member_user, test_team,
+        make_environment, mock_terraform,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(team_admin_token))
+        assert response.status_code == 202
+
+    def test_no_membership_on_this_team_is_forbidden(
+        self, client: TestClient, member_token, super_admin_token, db_session, make_environment,
+    ):
+        other_team_id = _make_other_team(client, super_admin_token, db_session)
+        owner = _make_other_team_owner(db_session, uuid.UUID(other_team_id))
+        env = make_environment(team_id=uuid.UUID(other_team_id), created_by=owner.id, status="RUNNING")
+        response = client.post(f"/environments/{env.id}/pause", headers=_auth(member_token))
+        assert response.status_code == 403
+
+
+class TestResumeEnvironment:
+    """POST /environments/{id}/resume — from PAUSED only. See
+    routers/environments.py's module docstring, 'GRACE PERIOD & PAUSE
+    SAFETY NET'."""
+
+    def test_requires_auth(self, client: TestClient):
+        assert client.post(f"/environments/{uuid.uuid4()}/resume").status_code == 401
+
+    def test_resume_from_paused_succeeds(
+        self, client: TestClient, member_user, member_token, test_team,
+        make_environment, mock_terraform, db_session,
+    ):
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=1),
+            pause_expires_at=datetime.now(timezone.utc) + timedelta(days=6),
+        )
+        response = client.post(f"/environments/{env.id}/resume", headers=_auth(member_token))
+        assert response.status_code == 202
+        assert response.json()["status"] == "RESUMING"
+
+        db_session.refresh(env)
+        assert env.status == "RESUMING"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_RESUME_REQUESTED")
+            .first()
+        )
+        assert audit is not None
+        assert len(mock_terraform["resume"]) == 1
+
+    def test_resume_from_running_is_rejected(
+        self, client: TestClient, member_user, member_token, test_team, make_environment,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="RUNNING")
+        response = client.post(f"/environments/{env.id}/resume", headers=_auth(member_token))
+        assert response.status_code == 400
+
+    def test_member_cannot_resume_teammates_environment(
+        self, client: TestClient, member_token, team_admin_user, test_team,
+        make_environment, mock_terraform,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=team_admin_user.id, status="PAUSED")
+        response = client.post(f"/environments/{env.id}/resume", headers=_auth(member_token))
+        assert response.status_code == 403
+
+    def test_team_admin_can_resume_any_team_environment(
+        self, client: TestClient, team_admin_token, member_user, test_team,
+        make_environment, mock_terraform,
+    ):
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PAUSED")
+        response = client.post(f"/environments/{env.id}/resume", headers=_auth(team_admin_token))
+        assert response.status_code == 202
+
 
 class TestExtendTTL:
     def test_requires_auth(self, client: TestClient):
@@ -655,6 +845,55 @@ class TestExtendTTL:
             f"/environments/{env.id}/ttl", json={"extend_hours": 24}, headers=_auth(member_token)
         )
         assert response.status_code == 403
+
+    def test_extend_from_expiring_cancels_grace_period(
+        self, client: TestClient, member_user, member_token, test_team, make_environment, db_session,
+    ):
+        """Extending from EXPIRING cancels the grace period outright and
+        returns to RUNNING — see routers/environments.py's module
+        docstring, 'GRACE PERIOD & PAUSE SAFETY NET'."""
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=datetime.now(timezone.utc) - timedelta(hours=1),
+            expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+        response = client.patch(
+            f"/environments/{env.id}/ttl", json={"extend_hours": 24}, headers=_auth(member_token)
+        )
+        assert response.status_code == 200
+
+        db_session.refresh(env)
+        assert env.status == "RUNNING"
+        assert env.expiring_since is None
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_EXTENDED_FROM_EXPIRING")
+            .first()
+        )
+        assert audit is not None
+        assert audit.event_metadata["cancelled_grace_period"] is True
+
+        # And a plain TTL_EXTENDED must NOT also have been logged for this
+        # same request — the two actions are mutually exclusive per call.
+        plain_extend = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "TTL_EXTENDED")
+            .first()
+        )
+        assert plain_extend is None
+
+    def test_cannot_extend_a_paused_environment(
+        self, client: TestClient, member_user, member_token, test_team, make_environment,
+    ):
+        """PAUSED isn't in the extendable set — resuming (which grants a
+        fresh TTL window) is the correct action there, not extending a TTL
+        that isn't currently counting down."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PAUSED")
+        response = client.patch(
+            f"/environments/{env.id}/ttl", json={"extend_hours": 24}, headers=_auth(member_token)
+        )
+        assert response.status_code == 400
 
 
 class TestCallback:
@@ -801,39 +1040,311 @@ class TestCallback:
         assert audit is not None
         assert audit.event_metadata["error"] == "terraform apply exited 1"
 
-
-class TestExpiredEnvironments:
-    def test_missing_secret_is_rejected(self, client: TestClient):
-        assert client.get("/environments/expired").status_code == 403
-
-    def test_returns_only_running_and_past_expiry(
-        self, client: TestClient, member_user, test_team, make_environment,
+    def test_paused_status_sets_pause_fields_and_writes_audit(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
     ):
-        past = datetime.now(timezone.utc) - timedelta(hours=1)
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
-
-        expired_running = make_environment(
-            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=past,
-        )
-        make_environment(
-            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=future,
-        )
-        make_environment(
-            team_id=test_team.id, created_by=member_user.id, status="DESTROYED", expires_at=past,
-        )
-
-        response = client.get(
-            "/environments/expired", headers=_callback_auth()
+        """PAUSING -> PAUSED, confirmed by pause.yml. See routers/
+        environments.py's module docstring, 'GRACE PERIOD & PAUSE SAFETY
+        NET'."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PAUSING")
+        response = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "PAUSED", "actor": "cron"},
+            headers=_callback_auth(),
         )
         assert response.status_code == 200
-        env_ids = {item["env_id"] for item in response.json()}
-        assert str(expired_running.id) in env_ids
-        assert len(env_ids) >= 1
-        # Only the expired RUNNING row should be present among our fixtures'
-        # ids specifically — check the other two are excluded.
-        for item in response.json():
-            if item["env_id"] == str(expired_running.id):
-                assert item["team"] == test_team.slug
+
+        db_session.refresh(env)
+        assert env.status == "PAUSED"
+        assert env.paused_at is not None
+        assert env.pause_expires_at is not None
+        actual_delta = env.pause_expires_at - env.paused_at
+        assert abs(actual_delta - timedelta(days=settings.paused_max_days)) < timedelta(seconds=5)
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_PAUSED")
+            .first()
+        )
+        assert audit is not None
+
+    def test_resuming_to_running_does_not_overwrite_outputs(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        """The single most important regression guard added in this batch.
+        resume.yml never re-runs `terraform apply`, so it reports back with
+        no new outputs — this must NOT wipe out the real endpoints/ARNs
+        recorded at original provision time. See environment_callback()'s
+        RESUMING branch in routers/environments.py."""
+        original_outputs = {"ecs_service_arn": "arn:aws:ecs:fake", "rds_endpoint": "db.example.com"}
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="RESUMING",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=1),
+            pause_expires_at=datetime.now(timezone.utc) + timedelta(days=6),
+        )
+        env.outputs = original_outputs
+        db_session.commit()
+        old_expires_at = env.expires_at
+
+        response = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "RUNNING", "actor": member_user.username},
+            headers=_callback_auth(),
+        )
+        assert response.status_code == 200
+
+        db_session.refresh(env)
+        assert env.status == "RUNNING"
+        assert env.outputs == original_outputs  # untouched — the whole point of this test
+        assert env.paused_at is None
+        assert env.pause_expires_at is None
+        assert env.expiring_since is None
+        assert env.expires_at > old_expires_at  # fresh TTL window granted on resume
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_RESUMED")
+            .first()
+        )
+        assert audit is not None
+
+    def test_provisioning_to_running_still_overwrites_outputs(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        """Companion to the RESUMING test above — proves the two branches
+        of the RUNNING callback are genuinely distinguished by the
+        environment's prior status, not accidentally merged into one."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="PROVISIONING")
+        new_outputs = {"ecs_service_arn": "arn:aws:ecs:brand-new"}
+        response = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "RUNNING", "outputs": new_outputs},
+            headers=_callback_auth(),
+        )
+        assert response.status_code == 200
+
+        db_session.refresh(env)
+        assert env.outputs == new_outputs
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_RUNNING")
+            .first()
+        )
+        assert audit is not None
+
+    def test_destroy_via_pause_expiry_logs_distinct_audit_action(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        """actor='cron_pause_expired' (set by ttl-cron.yml's Sweep-3
+        dispatch) must log ENV_PAUSE_EXPIRED_DESTROYED, not an ordinary
+        ENV_DESTROYED — this destroy was never requested by a human and
+        was preceded by two separate advance warnings."""
+        env = make_environment(team_id=test_team.id, created_by=member_user.id, status="DESTROYING")
+        response = client.post(
+            f"/environments/{env.id}/callback",
+            json={"status": "DESTROYED", "actor": "cron_pause_expired"},
+            headers=_callback_auth(),
+        )
+        assert response.status_code == 200
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYED"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_PAUSE_EXPIRED_DESTROYED")
+            .first()
+        )
+        assert audit is not None
+        assert audit.actor_type == "cron"
+
+        ordinary = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_DESTROYED")
+            .first()
+        )
+        assert ordinary is None  # must not ALSO log the ordinary action
+
+
+class TestProcessTTL:
+    """POST /environments/process-ttl — the three-sweep (+ one warning
+    pass) grace-period/pause state machine driver that replaced GET
+    /environments/expired. See process_ttl()'s docstring in
+    routers/environments.py for what each sweep does."""
+
+    def test_missing_secret_is_rejected(self, client: TestClient):
+        assert client.post("/environments/process-ttl").status_code == 403
+
+    # --- Sweep 1: RUNNING -> EXPIRING ---
+
+    def test_expired_running_environment_becomes_expiring(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=past,
+        )
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        assert str(env.id) in response.json()["transitioned_to_expiring"]
+
+        db_session.refresh(env)
+        assert env.status == "EXPIRING"
+        assert env.expiring_since is not None
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_EXPIRING")
+            .first()
+        )
+        assert audit is not None
+        assert audit.actor_type == "cron"
+
+    def test_running_environment_not_yet_expired_is_untouched(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=future,
+        )
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        assert str(env.id) not in response.json()["transitioned_to_expiring"]
+
+        db_session.refresh(env)
+        assert env.status == "RUNNING"
+
+    # --- Sweep 2: EXPIRING -> PAUSING ---
+
+    def test_expiring_past_grace_period_moves_to_pausing(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        grace_elapsed = datetime.now(timezone.utc) - timedelta(
+            hours=settings.expiring_grace_period_hours + 1
+        )
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=grace_elapsed,
+        )
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        to_pause_ids = {t["env_id"] for t in response.json()["to_pause"]}
+        assert str(env.id) in to_pause_ids
+
+        db_session.refresh(env)
+        assert env.status == "PAUSING"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_PAUSE_REQUESTED")
+            .first()
+        )
+        assert audit is not None
+        assert audit.actor_type == "cron"
+        assert audit.event_metadata["reason"] == "grace_period_elapsed"
+
+    def test_expiring_still_within_grace_period_is_untouched(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        just_started = datetime.now(timezone.utc) - timedelta(minutes=5)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=just_started,
+        )
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        to_pause_ids = {t["env_id"] for t in response.json()["to_pause"]}
+        assert str(env.id) not in to_pause_ids
+
+        db_session.refresh(env)
+        assert env.status == "EXPIRING"
+
+    # --- Sweep 3: PAUSED -> DESTROYING ---
+
+    def test_paused_past_pause_window_moves_to_destroying(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=settings.paused_max_days, hours=1),
+            pause_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        to_destroy_ids = {t["env_id"] for t in response.json()["to_destroy"]}
+        assert str(env.id) in to_destroy_ids
+
+        db_session.refresh(env)
+        assert env.status == "DESTROYING"
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_DESTROY_REQUESTED")
+            .first()
+        )
+        assert audit is not None
+        assert audit.event_metadata["reason"] == "pause_window_elapsed"
+
+    def test_paused_still_within_pause_window_is_untouched(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=1),
+            pause_expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        to_destroy_ids = {t["env_id"] for t in response.json()["to_destroy"]}
+        assert str(env.id) not in to_destroy_ids
+
+        db_session.refresh(env)
+        assert env.status == "PAUSED"
+
+    # --- Sweep 4: pause-expiring-soon warning (one-time) ---
+
+    def test_paused_nearing_destroy_sets_warning_timestamp(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        soon = datetime.now(timezone.utc) + timedelta(hours=10)  # within the 48h window
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=6),
+            pause_expires_at=soon,
+        )
+        assert env.pause_expiry_warning_sent_at is None
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+
+        db_session.refresh(env)
+        assert env.pause_expiry_warning_sent_at is not None
+        assert env.status == "PAUSED"  # the warning alone doesn't change status
+
+    def test_warning_only_fires_once_across_multiple_cron_passes(
+        self, client: TestClient, member_user, test_team, make_environment, db_session,
+    ):
+        """Without pause_expiry_warning_sent_at gating this, a 48h window
+        at a 15-minute cron interval would send ~192 duplicate warnings."""
+        soon = datetime.now(timezone.utc) + timedelta(hours=10)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="PAUSED",
+            paused_at=datetime.now(timezone.utc) - timedelta(days=6),
+            pause_expires_at=soon,
+        )
+
+        client.post("/environments/process-ttl", headers=_callback_auth())
+        db_session.refresh(env)
+        first_sent_at = env.pause_expiry_warning_sent_at
+        assert first_sent_at is not None
+
+        client.post("/environments/process-ttl", headers=_callback_auth())
+        db_session.refresh(env)
+        assert env.pause_expiry_warning_sent_at == first_sent_at  # unchanged — not resent
 
 
 class TestRunbook:

@@ -1,0 +1,114 @@
+name: Pause Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_id:
+        description: "UUID of the environment to pause"
+        required: true
+        type: string
+      region:
+        description: "AWS region the environment was provisioned in"
+        required: false
+        type: string
+        default: "us-east-1"
+      actor:
+        description: "Who triggered this — a username, or 'cron' for automatic grace-period pause"
+        required: false
+        type: string
+        default: "system"
+
+permissions:
+  id-token: write # required for OIDC -> AWS
+  contents: read
+
+jobs:
+  pause:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preflight — check required secrets
+        # Deliberately does NOT check TF_STATE_BUCKET / TF_LOCK_TABLE /
+        # SHARED_VPC_ID like provision.yml/destroy.yml do — this workflow
+        # never runs `terraform init`/`apply`/`destroy` at all. It talks to
+        # the already-provisioned ECS service and RDS instance directly via
+        # the AWS CLI, using the same outpost-{env_id} / outpost-shared
+        # naming convention the Terraform modules use (see
+        # terraform/modules/ecs/main.tf, terraform/modules/rds/main.tf).
+        # This is a deliberate choice, not a shortcut: `desired_count` is
+        # hardcoded to 1 in the ECS module, so a subsequent `terraform
+        # apply` against this workspace would just fight the pause by
+        # reconciling it back to 1. Scale/stop state isn't something this
+        # project wants Terraform treating as declarative config.
+        id: preflight
+        run: |
+          missing=()
+          [ -z "${{ secrets.AWS_ROLE_ARN }}" ] && missing+=("AWS_ROLE_ARN")
+          [ -z "${{ secrets.CALLBACK_BASE_URL }}" ] && missing+=("CALLBACK_BASE_URL")
+          [ -z "${{ secrets.CALLBACK_SECRET }}" ] && missing+=("CALLBACK_SECRET")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping pause — missing secrets: ${missing[*]}. See .github/workflows/README.md."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS via OIDC
+        if: steps.preflight.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Scale ECS service to 0
+        if: steps.preflight.outputs.configured == 'true'
+        run: |
+          aws ecs update-service \
+            --cluster outpost-shared \
+            --service "outpost-${{ inputs.env_id }}" \
+            --desired-count 0 \
+            --region "${{ inputs.region }}" \
+            --no-cli-pager
+          aws ecs wait services-stable \
+            --cluster outpost-shared \
+            --services "outpost-${{ inputs.env_id }}" \
+            --region "${{ inputs.region }}"
+
+      - name: Stop RDS instance
+        # Idempotent by design: only calls stop-db-instance if the instance
+        # is actually "available". Without this guard, a retried/duplicate
+        # dispatch would hit "InvalidDBInstanceState" on the second call.
+        if: steps.preflight.outputs.configured == 'true'
+        run: |
+          DB_ID="outpost-$(echo "${{ inputs.env_id }}" | cut -c1-8)"
+          STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "$DB_ID" \
+            --region "${{ inputs.region }}" \
+            --query 'DBInstances[0].DBInstanceStatus' --output text)
+          echo "Current RDS status: $STATUS"
+          if [ "$STATUS" == "available" ]; then
+            aws rds stop-db-instance --db-instance-identifier "$DB_ID" --region "${{ inputs.region }}"
+          fi
+          aws rds wait db-instance-stopped --db-instance-identifier "$DB_ID" --region "${{ inputs.region }}"
+
+      - name: Callback — Success
+        if: success() && steps.preflight.outputs.configured == 'true'
+        run: |
+          PAYLOAD=$(jq -nc --arg actor "${{ inputs.actor }}" '{status: "PAUSED", actor: $actor}')
+          curl -sf -X POST \
+            "${{ secrets.CALLBACK_BASE_URL }}/environments/${{ inputs.env_id }}/callback" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "$PAYLOAD"
+
+      - name: Callback — Failure
+        if: failure() && steps.preflight.outputs.configured == 'true'
+        run: |
+          PAYLOAD=$(jq -nc \
+            --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{status: "FAILED", error: ("Pause failed. See run: " + $url)}')
+          curl -sf -X POST \
+            "${{ secrets.CALLBACK_BASE_URL }}/environments/${{ inputs.env_id }}/callback" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "$PAYLOAD"

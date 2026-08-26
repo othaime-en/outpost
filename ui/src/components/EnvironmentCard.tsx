@@ -4,22 +4,30 @@ import StatusBadge from './StatusBadge'
 import HealthIndicator from './HealthIndicator'
 import CostBadge from './CostBadge'
 import TTLCountdown from './TTLCountdown'
-import { formatRelativeTime, shortId } from '../lib/format'
+import { expiryDisplay, formatRelativeTime, shortId } from '../lib/format'
 
 // Kept in sync with useEnvironmentActions.tsx's identical set — see that
 // file's comment on DESTROYABLE for why PENDING is included (cancelling a
-// stuck PENDING environment, not a real destroy).
-const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING'])
+// stuck PENDING environment, not a real destroy), and EXPIRING/PAUSED for
+// the grace-period/pause safety net (routers/environments.py's module
+// docstring).
+const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING', 'EXPIRING', 'PAUSED'])
 
 interface EnvironmentCardProps {
   env: Environment
   onDestroy: (env: Environment) => void
   onExtend: (env: Environment) => void
+  onPause: (env: Environment) => void
+  onResume: (env: Environment) => void
 }
 
-export default function EnvironmentCard({ env, onDestroy, onExtend }: EnvironmentCardProps) {
+export default function EnvironmentCard({ env, onDestroy, onExtend, onPause, onResume }: EnvironmentCardProps) {
   const canDestroy = DESTROYABLE.has(env.status)
-  const canExtend = env.status === 'RUNNING'
+  const canExtend = env.status === 'RUNNING' || env.status === 'EXPIRING'
+  const canPause = env.status === 'RUNNING' || env.status === 'EXPIRING'
+  const canResume = env.status === 'PAUSED'
+  const isPaused = env.status === 'PAUSED'
+  const expiry = expiryDisplay(env)
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 p-4">
@@ -49,13 +57,11 @@ export default function EnvironmentCard({ env, onDestroy, onExtend }: Environmen
 
       <div className="flex items-center justify-between text-sm">
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-gray-500 dark:text-gray-500">
-            {env.status === 'DESTROYED' ? 'destroyed' : 'expires in'}
-          </span>
-          {env.status === 'DESTROYED' ? (
-            <span className="font-mono text-sm text-gray-500 dark:text-gray-500">—</span>
+          <span className="text-xs text-gray-500 dark:text-gray-500">{expiry.label}</span>
+          {expiry.targetIso ? (
+            <TTLCountdown expiresAt={expiry.targetIso} />
           ) : (
-            <TTLCountdown expiresAt={env.expires_at} />
+            <span className="font-mono text-sm text-gray-500 dark:text-gray-500">—</span>
           )}
         </div>
         <div className="flex flex-col items-end gap-0.5">
@@ -85,6 +91,14 @@ export default function EnvironmentCard({ env, onDestroy, onExtend }: Environmen
                      hover:bg-amber-50 dark:hover:bg-amber-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
         >
           Extend TTL
+        </button>
+        <button
+          onClick={() => (isPaused ? onResume(env) : onPause(env))}
+          disabled={isPaused ? !canResume : !canPause}
+          className="flex-1 rounded-md border border-violet-300 dark:border-violet-900 px-2 py-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400
+                     hover:bg-violet-50 dark:hover:bg-violet-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
+        >
+          {isPaused ? 'Resume' : 'Pause'}
         </button>
         <Link
           to={`/environments/${env.id}`}

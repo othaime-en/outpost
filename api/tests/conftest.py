@@ -261,6 +261,10 @@ def _make_environment(
     ttl_hours: int = 24,
     expires_at: Optional[datetime] = None,
     name: Optional[str] = None,
+    expiring_since: Optional[datetime] = None,
+    paused_at: Optional[datetime] = None,
+    pause_expires_at: Optional[datetime] = None,
+    pause_expiry_warning_sent_at: Optional[datetime] = None,
 ) -> Environment:
     env = Environment(
         name=name or f"test-env-{uuid.uuid4().hex[:8]}",
@@ -271,6 +275,14 @@ def _make_environment(
         ttl_hours=ttl_hours,
         expires_at=expires_at or (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)),
         aws_region="us-east-1",
+        # Grace-period/pause fields — all default None (nothing set) unless
+        # a test explicitly needs an environment already sitting mid-way
+        # through that state machine. See routers/environments.py's module
+        # docstring, "GRACE PERIOD & PAUSE SAFETY NET".
+        expiring_since=expiring_since,
+        paused_at=paused_at,
+        pause_expires_at=pause_expires_at,
+        pause_expiry_warning_sent_at=pause_expiry_warning_sent_at,
     )
     db_session.add(env)
     db_session.commit()
@@ -290,7 +302,15 @@ def make_environment(db_session):
 
     Use this (rather than POST /environments) whenever a test needs an
     environment already sitting in a particular status, since POST always
-    starts a real one at PENDING and dispatches a workflow.
+    starts a real one at PENDING and dispatches a workflow. Also accepts
+    expiring_since / paused_at / pause_expires_at / pause_expiry_warning_sent_at
+    for tests that need an environment already mid-way through the grace-
+    period/pause state machine, e.g.:
+
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+            expiring_since=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
     """
 
     def _factory(**kwargs) -> Environment:

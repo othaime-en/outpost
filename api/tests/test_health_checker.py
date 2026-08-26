@@ -180,6 +180,44 @@ class TestPollOnce:
         mock_check.assert_not_called()
         assert updated == 0
 
+    def test_polls_expiring_environments_too(
+        self, db_session, test_team, member_user, make_environment
+    ):
+        """EXPIRING is still live infrastructure, just past its official
+        TTL and sitting in a grace period — see this module's docstring,
+        and routers/environments.py's 'GRACE PERIOD & PAUSE SAFETY NET' —
+        so it must be polled the same as RUNNING."""
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="EXPIRING",
+        )
+        env.outputs = {"ecs_service_arn": "a", "ecs_cluster_arn": "b"}
+        db_session.commit()
+
+        with patch.object(health_checker, "check_ecs_health", return_value=health_checker.HEALTHY):
+            updated = health_checker.poll_once(db_session)
+
+        assert updated == 1
+        db_session.refresh(env)
+        assert env.health_status == health_checker.HEALTHY
+
+    def test_ignores_pausing_paused_resuming_environments(
+        self, db_session, test_team, member_user, make_environment
+    ):
+        """No live ECS service to poll during any of these three states —
+        see this module's docstring."""
+        for status in ("PAUSING", "PAUSED", "RESUMING"):
+            env = make_environment(
+                team_id=test_team.id, created_by=member_user.id, status=status,
+            )
+            env.outputs = {"ecs_service_arn": "a", "ecs_cluster_arn": "b"}
+            db_session.commit()
+
+        with patch.object(health_checker, "check_ecs_health") as mock_check:
+            updated = health_checker.poll_once(db_session)
+
+        mock_check.assert_not_called()
+        assert updated == 0
+
     def test_one_bad_environment_does_not_block_others(
         self, db_session, test_team, member_user, make_environment
     ):
