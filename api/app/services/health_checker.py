@@ -1,9 +1,19 @@
 """
 Health Checking Service
 
-Polls the ECS service behind each RUNNING environment and derives a
-coarse HEALTHY / DEGRADED / UNKNOWN status from `runningCount` vs
-`desiredCount`.
+Polls the ECS service behind each RUNNING or EXPIRING environment and
+derives a coarse HEALTHY / DEGRADED / UNKNOWN status from `runningCount`
+vs `desiredCount`.
+
+EXPIRING was added alongside the grace-period/pause safety net — see
+routers/environments.py's module docstring, "GRACE PERIOD & PAUSE SAFETY
+NET". An EXPIRING environment's infrastructure hasn't changed at all (it's
+just past its official TTL, sitting in a grace period before an auto-pause
+decision gets made), so it still deserves a real health reading.
+PAUSED/PAUSING/RESUMING are deliberately NOT included below — there is no
+running ECS service to poll while paused, and a DEGRADED/UNKNOWN reading
+on an intentionally-stopped environment would just be misleading noise on
+the dashboard.
 """
 
 from __future__ import annotations
@@ -21,6 +31,11 @@ DEGRADED = "DEGRADED"
 UNKNOWN = "UNKNOWN"
 
 DEFAULT_POLL_INTERVAL_SECONDS = 300  # 5 minutes, per the implementation plan
+
+# Statuses whose infrastructure is expected to actually be running right
+# now. Kept as a module-level constant rather than inlined in the query
+# below so it's the one place to update if the state machine changes again.
+POLLABLE_STATUSES = ("RUNNING", "EXPIRING")
 
 
 def check_ecs_health(ecs_service_arn: str, cluster_arn: str, region: str) -> str:
@@ -64,9 +79,10 @@ def check_ecs_health(ecs_service_arn: str, cluster_arn: str, region: str) -> str
 
 def poll_once(db: Session) -> int:
     """
-    One full health-poll pass: every RUNNING environment with recorded
-    Terraform outputs gets its `health_status` / `health_checked_at`
-    updated. Commits once at the end of the pass.
+    One full health-poll pass: every RUNNING or EXPIRING environment with
+    recorded Terraform outputs gets its `health_status` / `health_checked_at`
+    updated. PAUSED/PAUSING/RESUMING environments are skipped entirely —
+    see this module's docstring. Commits once at the end of the pass.
 
     Returns the number of environments updated, so callers (the startup
     background task, or a test) can log/assert on progress without needing
@@ -85,14 +101,14 @@ def poll_once(db: Session) -> int:
     # routers/environments.py's callback handler.
     from app.models.environment import Environment
 
-    running = (
+    pollable = (
         db.query(Environment)
-        .filter(Environment.status == "RUNNING", Environment.outputs.isnot(None))
+        .filter(Environment.status.in_(POLLABLE_STATUSES), Environment.outputs.isnot(None))
         .all()
     )
 
     updated = 0
-    for env in running:
+    for env in pollable:
         outputs = env.outputs or {}
         service_arn = outputs.get("ecs_service_arn")
         cluster_arn = outputs.get("ecs_cluster_arn")

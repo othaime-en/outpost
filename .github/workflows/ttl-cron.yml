@@ -17,9 +17,9 @@ jobs:
         # This workflow runs on a schedule, so unlike provision.yml/destroy.yml
         # it fires automatically every 15 minutes regardless of whether anyone
         # triggered it. It doesn't need AWS secrets (it only calls the API and
-        # dispatches destroy.yml), just the callback ones. Skip cleanly instead
-        # of a failed run (and notification email) every 15 minutes until
-        # those are set. Remove this step once they are.
+        # dispatches pause.yml/destroy.yml), just the callback ones. Skip
+        # cleanly instead of a failed run (and notification email) every 15
+        # minutes until those are set. Remove this step once they are.
         id: preflight
         run: |
           missing=()
@@ -33,28 +33,62 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fetch expired environments
+      - name: Process TTL state machine
+        # Single call that does all of the grace-period/pause state-machine
+        # reasoning server-side (RUNNING->EXPIRING, EXPIRING->PAUSING,
+        # PAUSED->DESTROYING, plus the pause-expiring-soon warning) — see
+        # process_ttl()'s docstring in routers/environments.py. This step's
+        # only job is handing the resulting to_pause/to_destroy lists to the
+        # dispatch steps below; it makes no state-machine decisions itself.
+        # Supersedes the old "Fetch expired environments" step, which called
+        # GET /environments/expired — a single unconditional RUNNING->destroy
+        # check with no grace period at all.
         if: steps.preflight.outputs.configured == 'true'
-        id: expired
+        id: process
         run: |
-          RESPONSE=$(curl -sf \
+          RESPONSE=$(curl -sf -X POST \
             -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
-            "${{ secrets.CALLBACK_BASE_URL }}/environments/expired")
-          echo "envs=$RESPONSE" >> "$GITHUB_OUTPUT"
-          echo "Expired environments: $RESPONSE"
+            "${{ secrets.CALLBACK_BASE_URL }}/environments/process-ttl")
+          echo "result=$RESPONSE" >> "$GITHUB_OUTPUT"
+          echo "process-ttl result: $RESPONSE"
 
-      - name: Trigger destroy for each expired environment
+      - name: Dispatch pause for grace-period-lapsed environments
         if: steps.preflight.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPIRED_JSON: ${{ steps.expired.outputs.envs }}
+          RESULT_JSON: ${{ steps.process.outputs.result }}
         run: |
-          echo "$EXPIRED_JSON" | jq -r '.[] | .env_id' | while read -r env_id; do
-            echo "Dispatching destroy for $env_id"
+          echo "$RESULT_JSON" | jq -c '.to_pause[]' | while read -r target; do
+            env_id=$(echo "$target" | jq -r '.env_id')
+            region=$(echo "$target" | jq -r '.region')
+            echo "Dispatching pause for $env_id ($region) — grace period elapsed"
+            curl -sf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/pause.yml/dispatches" \
+              -d "{\"ref\":\"main\",\"inputs\":{\"env_id\":\"$env_id\",\"region\":\"$region\",\"actor\":\"cron\"}}"
+            sleep 2   # avoid tripping GitHub API rate limits when several envs transition together
+          done
+
+      - name: Dispatch destroy for pause-window-lapsed environments
+        # actor is "cron_pause_expired", not "cron" — environment_callback()
+        # in routers/environments.py checks this exact string to log
+        # ENV_PAUSE_EXPIRED_DESTROYED instead of an ordinary ENV_DESTROYED,
+        # since this destroy was never requested by a human and was
+        # preceded by two separate advance warnings (EXPIRING, then PAUSED).
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT_JSON: ${{ steps.process.outputs.result }}
+        run: |
+          echo "$RESULT_JSON" | jq -c '.to_destroy[]' | while read -r target; do
+            env_id=$(echo "$target" | jq -r '.env_id')
+            region=$(echo "$target" | jq -r '.region')
+            echo "Dispatching destroy for $env_id ($region) — pause window elapsed"
             curl -sf -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/destroy.yml/dispatches" \
-              -d "{\"ref\":\"main\",\"inputs\":{\"env_id\":\"$env_id\",\"actor\":\"cron\"}}"
-            sleep 2   # avoid tripping GitHub API rate limits when several envs expire together
+              -d "{\"ref\":\"main\",\"inputs\":{\"env_id\":\"$env_id\",\"region\":\"$region\",\"actor\":\"cron_pause_expired\"}}"
+            sleep 2
           done

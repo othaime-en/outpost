@@ -116,6 +116,7 @@ reverses both on resume. This is handled entirely by
 `start-db-instance` — never by `terraform apply`.
 
 This is not a shortcut: `aws_ecs_service.env.desired_count` in
+This is intentional, not a shortcut: `aws_ecs_service.env.desired_count` in
 `modules/ecs/main.tf` is hardcoded to `1`. If pause/resume went through
 Terraform instead, the very next real `terraform apply` against that
 workspace (there isn't one in the current design, but if one were ever
@@ -146,6 +147,14 @@ this when that policy finally gets written; it's an easy one to miss since
 | Secret injection   | `valueFrom = var.rds_secret_arn` (whole JSON blob)    | `valueFrom = "${secret_arn}:url::"`                                            | Container needs the connection string, not the raw JSON secret                                                                                                                                                                                                                                                                      |
 | Bootstrap (2.1)    | Didn't create the shared ECS cluster                  | Added `aws ecs create-cluster --cluster-name outpost-shared`                   | `data "aws_ecs_cluster"` in the ecs module would fail to resolve otherwise                                                                                                                                                                                                                                                          |
 | RDS engine version | Hardcoded `engine_version = "15.4"`                   | `data "aws_rds_engine_version"` lookup for the latest available 15.x minor     | AWS deprecates specific RDS minor versions on a roughly annual cadence; "15.4" was already unavailable by the time of the AWS bootstrap, and any other hardcoded minor would just fail again later. Staying on major version 15 (not jumping to 16/17) is deliberate — this only fixes staleness, it isn't a version-bump decision. |
+| Area             | Plan said                                             | Implemented instead                                                            | Why                                                                                            |
+| ---------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `backend.tf`     | `key = "envs/${var.env_id}/terraform.tfstate"` inline | Empty/partial `backend "s3" {}`, all values via `-backend-config` flags        | Terraform backend blocks cannot reference input variables — this would fail `terraform init`   |
+| Networking       | One subnet per env                                    | Two subnets (two AZs) per env                                                  | `aws_db_subnet_group` requires >= 2 AZs; single-subnet design would fail on RDS creation       |
+| Security group   | Only port 8080 ingress from `10.0.0.0/8`              | Added self-referencing port 5432 ingress; tightened 8080 rule to `10.0.0.0/16` | ECS task otherwise has no path to RDS on 5432; `/8` was broader than the VPC itself            |
+| ECS task role    | Only a custom `secretsmanager:GetSecretValue` policy  | Added AWS-managed `AmazonECSTaskExecutionRolePolicy`                           | Without it, Fargate can't pull the image or write CloudWatch logs — the task would never start |
+| Secret injection | `valueFrom = var.rds_secret_arn` (whole JSON blob)    | `valueFrom = "${secret_arn}:url::"`                                            | Container needs the connection string, not the raw JSON secret                                 |
+| Bootstrap (2.1)  | Didn't create the shared ECS cluster                  | Added `aws ecs create-cluster --cluster-name outpost-shared`                   | `data "aws_ecs_cluster"` in the ecs module would fail to resolve otherwise                     |
 
 Everything else (module boundaries, tagging scheme, naming conventions,
 `db.t3.micro`, `skip_final_snapshot = true`, `deletion_protection = false`,

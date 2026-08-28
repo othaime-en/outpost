@@ -4,6 +4,16 @@ Environment ORM Model
 This is the central entity of the entire application. Every other model
 either belongs to an environment (audit_logs, runbook, cost_snapshots) or
 owns environments (team, user).
+
+GRACE PERIOD & PAUSE FIELDS — see routers/environments.py's module
+docstring, "GRACE PERIOD & PAUSE SAFETY NET", for the full design. In
+short: a RUNNING environment whose TTL expires no longer goes straight to
+DESTROYING. It passes through EXPIRING (a 24h grace period) and, if nobody
+extends it, PAUSING/PAUSED (ECS scaled to 0, RDS stopped — reversible) for
+up to 7 days before a final, distinctly-audited destroy. `expiring_since`,
+`paused_at`, `pause_expires_at`, and `pause_expiry_warning_sent_at` back
+that flow; all four are nullable and unrelated to the older `expires_at`/
+`ttl_hours` pair, which continue to mean exactly what they always did.
 """
 
 import uuid
@@ -47,7 +57,12 @@ class Environment(Base):
         String,
         nullable=False,
         default="PENDING",
-        comment="PENDING | PROVISIONING | RUNNING | DESTROYING | DESTROYED | FAILED",
+        comment=(
+            "PENDING | PROVISIONING | RUNNING | EXPIRING | PAUSING | PAUSED | RESUMING | "
+            "DESTROYING | DESTROYED | FAILED — see routers/environments.py's module "
+            "docstring for the full state machine, including the grace-period/pause branch "
+            "added alongside expiring_since/paused_at/pause_expires_at below."
+        ),
     )
     ttl_hours = Column(
         Integer,
@@ -58,7 +73,16 @@ class Environment(Base):
     expires_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        comment="When the TTL cron will trigger auto-destroy",
+        comment="When the TTL cron moves this environment from RUNNING into EXPIRING",
+    )
+    expiring_since = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "Set when RUNNING -> EXPIRING. Cleared on extend (back to RUNNING) or on leaving "
+            "EXPIRING for any other reason. The TTL cron auto-pauses once "
+            "settings.expiring_grace_period_hours has elapsed since this timestamp."
+        ),
     )
     aws_region = Column(
         String,
@@ -91,6 +115,27 @@ class Environment(Base):
         DateTime(timezone=True),
         nullable=True,
         comment="Set when status transitions to DESTROYED. Never hard-deleted.",
+    )
+    paused_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Set when PAUSING -> PAUSED (confirmed by pause.yml's callback).",
+    )
+    pause_expires_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "paused_at + settings.paused_max_days. Past this, the TTL cron destroys the "
+            "environment for real — audited as ENV_PAUSE_EXPIRED_DESTROYED, not ENV_DESTROYED."
+        ),
+    )
+    pause_expiry_warning_sent_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "Set the first time the 'will be destroyed soon' notification fires for a paused "
+            "environment, so the 15-min cron sends it once rather than on every pass."
+        ),
     )
 
     # --- Relationships ---

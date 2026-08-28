@@ -37,12 +37,20 @@ class AuditLog(Base):
             "ENV_CREATED | ENV_PROVISIONING | ENV_RUNNING | "
             "ENV_DESTROY_REQUESTED | ENV_DESTROYING | ENV_DESTROYED | ENV_CANCELLED | "
             "ENV_FAILED | ENV_CALLBACK_IGNORED | "
-            "TTL_EXTENDED | USER_ADDED | USER_ROLE_CHANGED | "
+            "ENV_EXPIRING | ENV_EXTENDED_FROM_EXPIRING | "
+            "ENV_PAUSE_REQUESTED | ENV_PAUSED | ENV_RESUME_REQUESTED | ENV_RESUMED | "
+            "ENV_PAUSE_EXPIRED_DESTROYED | "
+            "TTL_EXTENDED | USER_ADDED | USER_REMOVED | USER_ROLE_CHANGED | "
+            "PLATFORM_ROLE_CHANGED | "
             "TEAM_CREATED | TEAM_DELETED | API_KEY_GENERATED. "
             "ENV_CANCELLED and ENV_CALLBACK_IGNORED added alongside PENDING-environment "
             "cancellation — see routers/environments.py's module docstring, "
-            "'CANCELLING A PENDING ENVIRONMENT'. TEAM_DELETED existed already but was "
-            "missing from this comment; added for accuracy, not new behavior."
+            "'CANCELLING A PENDING ENVIRONMENT'. The ENV_EXPIRING through "
+            "ENV_PAUSE_EXPIRED_DESTROYED actions were added alongside the grace-period/pause "
+            "safety net — see that same file's docstring, 'GRACE PERIOD & PAUSE SAFETY NET'. "
+            "USER_REMOVED and PLATFORM_ROLE_CHANGED existed already (routers/teams.py and "
+            "routers/users.py respectively) but were missing from this comment; added for "
+            "accuracy, not new behavior."
         ),
     )
     actor_type = Column(

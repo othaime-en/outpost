@@ -27,6 +27,10 @@ export type EnvStatus =
   | 'PENDING'
   | 'PROVISIONING'
   | 'RUNNING'
+  | 'EXPIRING'
+  | 'PAUSING'
+  | 'PAUSED'
+  | 'RESUMING'
   | 'DESTROYING'
   | 'DESTROYED'
   | 'FAILED'
@@ -90,6 +94,13 @@ export interface Environment {
   cost_estimate_usd: number | null
   created_at: string
   destroyed_at: string | null
+  // Grace-period/pause fields — see api/app/routers/environments.py's
+  // module docstring, "GRACE PERIOD & PAUSE SAFETY NET". All three are
+  // null except while the environment is actually in the relevant part of
+  // that state machine.
+  expiring_since: string | null
+  paused_at: string | null
+  pause_expires_at: string | null
 }
 
 export interface CreateEnvironmentBody {
@@ -368,6 +379,17 @@ class APIClient {
 
   destroyEnvironment = (id: string) =>
     this.request<CreateEnvironmentResult>(`/environments/${id}`, { method: 'DELETE' })
+
+  /**
+   * Manual pause — from RUNNING or EXPIRING. See api/app/routers/
+   * environments.py's module docstring, "GRACE PERIOD & PAUSE SAFETY NET".
+   */
+  pauseEnvironment = (id: string) =>
+    this.request<CreateEnvironmentResult>(`/environments/${id}/pause`, { method: 'POST' })
+
+  /** From PAUSED only. Grants a fresh TTL window on success. */
+  resumeEnvironment = (id: string) =>
+    this.request<CreateEnvironmentResult>(`/environments/${id}/resume`, { method: 'POST' })
 
   extendTTL = (id: string, extendHours: number) =>
     this.request<{ expires_at: string }>(`/environments/${id}/ttl`, {

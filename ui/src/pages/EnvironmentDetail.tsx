@@ -6,7 +6,7 @@ import HealthIndicator from '../components/HealthIndicator'
 import RunbookViewer from '../components/RunbookViewer'
 import TTLCountdown from '../components/TTLCountdown'
 import { useEnvironmentActions } from '../hooks/useEnvironmentActions'
-import { formatUTC } from '../lib/format'
+import { expiryDisplay, formatUTC } from '../lib/format'
 
 type Tab = 'outputs' | 'runbook' | 'audit' | 'cost'
 
@@ -18,7 +18,16 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 const POLL_INTERVAL_MS = 5_000
-const TRANSITIONAL = new Set(['PENDING', 'PROVISIONING', 'DESTROYING'])
+// PENDING/PROVISIONING/DESTROYING are the original set; PAUSING/RESUMING
+// added alongside the grace-period/pause safety net — see api/app/routers/
+// environments.py's module docstring. All five resolve in seconds-to-
+// minutes, same timescale as a Terraform apply/destroy, so 5s polling is
+// appropriate. EXPIRING is deliberately NOT included here even though it's
+// also "mid-transition" — it can last up to 24h (the grace period), and
+// polling every 5s for 24h on an open tab would be wasteful for no benefit;
+// nothing meaningful changes on this page while EXPIRING beyond the
+// countdown, which TTLCountdown already ticks client-side on its own.
+const TRANSITIONAL = new Set(['PENDING', 'PROVISIONING', 'DESTROYING', 'PAUSING', 'RESUMING'])
 
 export default function EnvironmentDetail() {
   const { id } = useParams<{ id: string }>()
@@ -38,7 +47,6 @@ export default function EnvironmentDetail() {
   }, [id])
 
   const actions = useEnvironmentActions(fetchEnv)
-
   useEffect(() => {
     fetchEnv()
   }, [fetchEnv])
@@ -66,6 +74,8 @@ export default function EnvironmentDetail() {
     return <p className="text-sm text-gray-500 dark:text-gray-500">Loading…</p>
   }
 
+  const expiry = expiryDisplay(env)
+
   return (
     <div>
       <button
@@ -83,6 +93,16 @@ export default function EnvironmentDetail() {
           {env.env_type}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() =>
+              env.status === 'PAUSED' ? actions.resume(env) : actions.promptPause(env)
+            }
+            disabled={env.status === 'PAUSED' ? !actions.canResume(env) : !actions.canPause(env)}
+            className="rounded-md border border-violet-300 dark:border-violet-900 px-3 py-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400
+                       hover:bg-violet-50 dark:hover:bg-violet-950 disabled:cursor-not-allowed disabled:border-gray-200 dark:disabled:border-gray-800 disabled:text-gray-400 dark:disabled:text-gray-700"
+          >
+            {env.status === 'PAUSED' ? 'Resume' : 'Pause'}
+          </button>
           <button
             onClick={() => actions.promptExtend(env)}
             disabled={!actions.canExtend(env)}
@@ -117,9 +137,9 @@ export default function EnvironmentDetail() {
         />
         <Stat label="Region" value={env.aws_region} mono />
         <Stat
-          label="Expires"
-          value={env.status === 'DESTROYED' ? '—' : undefined}
-          node={env.status === 'DESTROYED' ? undefined : <TTLCountdown expiresAt={env.expires_at} />}
+          label={expiry.label}
+          value={expiry.targetIso ? undefined : '—'}
+          node={expiry.targetIso ? <TTLCountdown expiresAt={expiry.targetIso} /> : undefined}
         />
         <Stat label="Created" value={`${formatUTC(env.created_at)} by @${env.created_by_username}`} small />
       </div>
@@ -271,6 +291,19 @@ const ACTION_COLORS: Record<string, string> = {
   ENV_DESTROYED: 'text-red-600 dark:text-red-400',
   ENV_FAILED: 'text-red-600 dark:text-red-400',
   TTL_EXTENDED: 'text-amber-600 dark:text-amber-400',
+  // Grace-period/pause actions — see api/app/routers/environments.py's
+  // module docstring, "GRACE PERIOD & PAUSE SAFETY NET". Colors follow
+  // StatusBadge.tsx's convention for the same states: orange for entering
+  // the grace period, violet for pause-related events, green for a
+  // successful resume (mirrors RUNNING), red for the pause-window-expiry
+  // destroy (it's still a real, final destroy).
+  ENV_EXPIRING: 'text-orange-600 dark:text-orange-400',
+  ENV_EXTENDED_FROM_EXPIRING: 'text-amber-600 dark:text-amber-400',
+  ENV_PAUSE_REQUESTED: 'text-violet-600 dark:text-violet-400',
+  ENV_PAUSED: 'text-violet-600 dark:text-violet-400',
+  ENV_RESUME_REQUESTED: 'text-cyan-600 dark:text-cyan-400',
+  ENV_RESUMED: 'text-green-600 dark:text-green-400',
+  ENV_PAUSE_EXPIRED_DESTROYED: 'text-red-600 dark:text-red-400',
 }
 
 function AuditTab({ envId }: { envId: string }) {

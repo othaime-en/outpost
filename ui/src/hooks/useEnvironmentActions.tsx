@@ -4,7 +4,11 @@ import Modal from '../components/Modal'
 import Toast, { type ToastState } from '../components/Toast'
 
 
-const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING'])
+const DESTROYABLE = new Set(['RUNNING', 'FAILED', 'PENDING', 'EXPIRING', 'PAUSED'])
+// Kept in sync with the backend's PAUSED_MAX_DAYS default (config.py) —
+// shown in the pause confirmation copy below. Same manual-sync convention
+// as EXPIRING_GRACE_PERIOD_HOURS in lib/format.ts.
+const PAUSED_MAX_DAYS = 7
 
 /**
  * True for a PENDING environment specifically — the one case where
@@ -28,6 +32,7 @@ export function useEnvironmentActions(onChanged: () => void) {
   const [destroyTarget, setDestroyTarget] = useState<Environment | null>(null)
   const [extendTarget, setExtendTarget] = useState<Environment | null>(null)
   const [extendHours, setExtendHours] = useState(24)
+  const [pauseTarget, setPauseTarget] = useState<Environment | null>(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
 
@@ -35,7 +40,16 @@ export function useEnvironmentActions(onChanged: () => void) {
     return DESTROYABLE.has(env.status)
   }
   function canExtend(env: Environment) {
-    return env.status === 'RUNNING'
+    // EXPIRING is included deliberately — extending here cancels the grace
+    // period and returns straight to RUNNING. See routers/environments.py's
+    // module docstring, "GRACE PERIOD & PAUSE SAFETY NET".
+    return env.status === 'RUNNING' || env.status === 'EXPIRING'
+  }
+  function canPause(env: Environment) {
+    return env.status === 'RUNNING' || env.status === 'EXPIRING'
+  }
+  function canResume(env: Environment) {
+    return env.status === 'PAUSED'
   }
 
   function promptDestroy(env: Environment) {
@@ -44,6 +58,9 @@ export function useEnvironmentActions(onChanged: () => void) {
   function promptExtend(env: Environment) {
     setExtendHours(24)
     setExtendTarget(env)
+  }
+  function promptPause(env: Environment) {
+    setPauseTarget(env)
   }
 
   async function confirmDestroy() {
@@ -83,6 +100,40 @@ export function useEnvironmentActions(onChanged: () => void) {
       onChanged()
     } catch (err) {
       setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Extend failed' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmPause() {
+    if (!pauseTarget) return
+    setBusy(true)
+    try {
+      await api.pauseEnvironment(pauseTarget.id)
+      setToast({ kind: 'success', message: `Pausing ${pauseTarget.name}…` })
+      setPauseTarget(null)
+      onChanged()
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Pause failed' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Resume fires immediately with no confirmation modal, unlike destroy
+   * and pause — it's a purely restorative action (bringing something back,
+   * not stopping or tearing anything down), so there's nothing here for a
+   * confirmation step to protect against.
+   */
+  async function resume(env: Environment) {
+    setBusy(true)
+    try {
+      await api.resumeEnvironment(env.id)
+      setToast({ kind: 'success', message: `Resuming ${env.name}…` })
+      onChanged()
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof APIError ? err.message : 'Resume failed' })
     } finally {
       setBusy(false)
     }
@@ -165,10 +216,46 @@ export function useEnvironmentActions(onChanged: () => void) {
           </Modal>
         )}
 
+        {pauseTarget && (
+          <Modal title={`Pause ${pauseTarget.name}?`} onClose={() => setPauseTarget(null)}>
+            <p className="mb-5 text-sm text-gray-600 dark:text-gray-400">
+              Scales the running service to zero and stops the database — reversible any time via
+              Resume. The TTL clock stops counting while paused, but it isn't free forever: AWS
+              still bills for stored data, and this environment is automatically destroyed if left
+              paused for {PAUSED_MAX_DAYS} days with nobody resuming it.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPauseTarget(null)}
+                className="rounded-md px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmPause}
+                disabled={busy}
+                className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {busy ? 'Pausing…' : 'Pause'}
+              </button>
+            </div>
+          </Modal>
+        )}
+
         <Toast toast={toast} onDismiss={() => setToast(null)} />
       </>
     )
   }
 
-  return { canDestroy, canExtend, promptDestroy, promptExtend, modals }
+  return {
+    canDestroy,
+    canExtend,
+    canPause,
+    canResume,
+    promptDestroy,
+    promptExtend,
+    promptPause,
+    resume,
+    modals,
+  }
 }
