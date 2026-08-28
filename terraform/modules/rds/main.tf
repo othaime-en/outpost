@@ -3,6 +3,12 @@ resource "random_password" "db" {
   special = false # avoid characters that need extra escaping in connection URLs / shell
 }
 
+data "aws_rds_engine_version" "postgres15" {
+  engine  = "postgres"
+  version = "15"
+  latest  = true
+}
+
 resource "aws_db_subnet_group" "env" {
   name       = "outpost-${var.env_id}"
   subnet_ids = var.subnet_ids
@@ -12,7 +18,7 @@ resource "aws_db_subnet_group" "env" {
 resource "aws_db_instance" "env" {
   identifier     = "outpost-${substr(var.env_id, 0, 8)}"
   engine         = "postgres"
-  engine_version = "15.4"
+  engine_version = data.aws_rds_engine_version.postgres15.version
   instance_class = "db.t3.micro"
 
   allocated_storage = 20
