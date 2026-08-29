@@ -71,9 +71,9 @@ jobs:
 
       - name: Setup Terraform
         if: steps.preflight.outputs.configured == 'true'
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.6.0"
+          terraform_version: "1.16.0"
 
       - name: Terraform Init
         if: steps.preflight.outputs.configured == 'true'
