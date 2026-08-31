@@ -78,6 +78,13 @@ jobs:
         # Idempotent by design: only calls stop-db-instance if the instance
         # is actually "available". Without this guard, a retried/duplicate
         # dispatch would hit "InvalidDBInstanceState" on the second call.
+        #
+        # No `aws rds wait db-instance-stopped` exists — confirmed against
+        # AWS's own official waiter list, which only defines
+        # db-instance-available / db-instance-deleted (plus snapshot/
+        # cluster/tenant-database variants) for DB instances. Polling
+        # manually instead, which is AWS's own documented recommendation
+        # for exactly this situation.
         if: steps.preflight.outputs.configured == 'true'
         run: |
           DB_ID="outpost-$(echo "${{ inputs.env_id }}" | cut -c1-8)"
@@ -89,7 +96,24 @@ jobs:
           if [ "$STATUS" == "available" ]; then
             aws rds stop-db-instance --db-instance-identifier "$DB_ID" --region "${{ inputs.region }}"
           fi
-          aws rds wait db-instance-stopped --db-instance-identifier "$DB_ID" --region "${{ inputs.region }}"
+
+          echo "Waiting for RDS instance to reach 'stopped'..."
+          for i in $(seq 1 60); do
+            STATUS=$(aws rds describe-db-instances \
+              --db-instance-identifier "$DB_ID" \
+              --region "${{ inputs.region }}" \
+              --query 'DBInstances[0].DBInstanceStatus' --output text)
+            echo "  [$i/60] status: $STATUS"
+            if [ "$STATUS" == "stopped" ]; then
+              echo "RDS instance stopped."
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Timed out waiting for RDS instance to reach 'stopped' after 30 minutes (last status: $STATUS)"
+              exit 1
+            fi
+            sleep 30
+          done
 
       - name: Callback — Success
         if: success() && steps.preflight.outputs.configured == 'true'
