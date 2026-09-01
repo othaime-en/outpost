@@ -1,0 +1,86 @@
+# .github/dependabot.yml
+version: 2
+
+updates:
+  # --- API (FastAPI backend) ---
+  - package-ecosystem: "pip"
+    directory: "/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "api"]
+    commit-message:
+      prefix: "chore(api-deps)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # --- CLI ---
+  - package-ecosystem: "pip"
+    directory: "/cli"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "cli"]
+    commit-message:
+      prefix: "chore(cli-deps)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # --- UI (React/Vite) ---
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ui"]
+    commit-message:
+      prefix: "chore(ui-deps)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # --- Terraform providers/modules ---
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "terraform"]
+    commit-message:
+      prefix: "chore(tf-deps)"
+
+  # --- GitHub Actions workflow pins ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "chore(ci-deps)"
+
+  # --- Docker base images ---
+  - package-ecosystem: "docker"
+    directory: "/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "chore(api-deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "chore(ui-deps)"
