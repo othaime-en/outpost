@@ -37,7 +37,7 @@ jobs:
   provision:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Preflight — check required secrets
         # AWS bootstrap (terraform/README.md Section 2.1) hasn't happened yet

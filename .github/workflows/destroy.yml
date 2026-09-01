@@ -26,7 +26,7 @@ jobs:
   destroy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Preflight — check required secrets
         # Same rationale as provision.yml — AWS bootstrap hasn't run yet in
