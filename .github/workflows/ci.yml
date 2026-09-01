@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15
+        image: postgres:18
         env:
           POSTGRES_DB: outpost_test
           POSTGRES_USER: outpost
@@ -42,7 +42,6 @@ jobs:
         run: ruff check api/
 
       - name: Run Alembic migrations against test DB
-
         run: cd api && alembic upgrade head
         env:
           DATABASE_URL: postgresql://outpost:outpost@localhost:5432/outpost_test
@@ -79,3 +78,51 @@ jobs:
 
       - name: Lint
         run: cd ui && npm run lint
+
+  terraform-validate:
+    name: Terraform — Format & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: Terraform validate
+        run: terraform validate
+        working-directory: terraform
+
+  docker-build:
+    name: Docker — Build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, ui]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: false
+          tags: outpost-${{ matrix.service }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
