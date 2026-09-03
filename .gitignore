@@ -40,6 +40,7 @@ terraform/**/.terraform/
 *.tfstate.*
 *.tfstate.backup
 terraform/*.tfvars
+terraform/**/*.tfvars
 *.tfvars          # May contain secrets — never commit
 .terraformignore
 !*.tfvars.example
