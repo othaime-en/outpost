@@ -11,7 +11,7 @@ data "aws_ssm_parameter" "al2023_ami" {
 # --- Security group: HTTP/HTTPS only. No SSH port — access is via SSM Session Manager. ---
 resource "aws_security_group" "api_host" {
   name        = "${var.name_prefix}-sg"
-  description = "Outpost platform API host — HTTP/HTTPS only, no SSH"
+  description = "Outpost platform API host - HTTP/HTTPS only, no SSH"
   vpc_id      = var.vpc_id
 
   ingress {
