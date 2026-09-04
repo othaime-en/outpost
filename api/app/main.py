@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth, environments, audit, teams, users, health
 from app.services import health_checker
+from app.config import settings
 
 logger = logging.getLogger("outpost.main")
 
@@ -48,6 +49,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        settings.frontend_url,
         "http://localhost:3000",    # Vite dev server
         "http://127.0.0.1:3000",
     ],
