@@ -70,6 +70,17 @@ export interface ApiKeyResponse {
   note: string
 }
 
+/**
+ * Mirrors api/app/schemas/settings.py's PlatformSettingsResponse.
+ * `updated_at`/`updated_by_username` describe the ttl_enforcement_enabled
+ * setting specifically — see that schema's docstring.
+ */
+export interface PlatformSettings {
+  ttl_enforcement_enabled: boolean
+  updated_at: string | null
+  updated_by_username: string | null
+}
+
 /** Response shape of POST /auth/refresh — mirrors api/app/schemas/auth.py's TokenResponse. */
 export interface TokenResponse {
   access_token: string
@@ -456,6 +467,18 @@ class APIClient {
     this.request<User>(`/users/${userId}/role`, {
       method: 'PATCH',
       body: JSON.stringify({ role }),
+    })
+
+  // --- Platform settings (read: any authenticated user; write: super_admin only) ---
+  getSettings = () => this.request<PlatformSettings>('/settings/')
+
+  /** super_admin only — see routers/settings.py's module docstring for why
+   * this exists (a temporary pause, or the eventual permanent teardown of
+   * the platform host). */
+  setTTLEnforcement = (enabled: boolean) =>
+    this.request<PlatformSettings>('/settings/ttl-enforcement', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
     })
 }
 

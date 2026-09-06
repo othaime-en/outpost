@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { isSuperAdmin } from '../lib/permissions'
-import { api, APIError, type PlatformRole, type User } from '../api/client'
+import { api, APIError, type PlatformRole, type PlatformSettings, type User } from '../api/client'
 
 const PLATFORM_ROLES: PlatformRole[] = ['user', 'super_admin']
 
@@ -13,6 +13,7 @@ export default function Settings() {
     <div className="space-y-10">
       <h1 className="font-display text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">Settings</h1>
       <ApiKeySection />
+      {isSuperAdmin(user) && <TTLEnforcementSection />}
       {isSuperAdmin(user) && <PlatformAdminSection />}
     </div>
   )
@@ -87,6 +88,80 @@ function ApiKeySection() {
         </div>
       )}
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+    </Section>
+  )
+}
+
+function TTLEnforcementSection() {
+  const [settings, setSettings] = useState<PlatformSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then(setSettings)
+      .catch((err) => setLoadError(err instanceof APIError ? err.message : 'Failed to load settings'))
+  }, [])
+
+  async function toggle() {
+    if (!settings) return
+    setBusy(true)
+    setError(null)
+    try {
+      const updated = await api.setTTLEnforcement(!settings.ttl_enforcement_enabled)
+      setSettings(updated)
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : 'Failed to update TTL enforcement')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Section title="TTL Enforcement">
+      <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+        Controls whether the 15-minute TTL cron is allowed to expire, pause, or destroy environments.
+        Turn this off before taking the platform host down, or to pause enforcement temporarily — the
+        cron will keep reporting a clean success instead of accumulating failed runs, and nothing gets
+        torn down while it's off.
+      </p>
+      {loadError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{loadError}</p>}
+      {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!settings && !loadError && <p className="text-sm text-gray-400 dark:text-gray-600">Loading…</p>}
+      {settings && (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span
+              className={`text-sm font-semibold ${
+                settings.ttl_enforcement_enabled
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-amber-600 dark:text-amber-500'
+              }`}
+            >
+              {settings.ttl_enforcement_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+            {settings.updated_by_username && settings.updated_at && (
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-600">
+                Last changed by {settings.updated_by_username} on{' '}
+                {new Date(settings.updated_at).toLocaleString()}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={toggle}
+            disabled={busy}
+            className={`shrink-0 rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-50 ${
+              settings.ttl_enforcement_enabled
+                ? 'bg-red-500 text-white hover:bg-red-400'
+                : 'bg-cyan-500 text-gray-950 hover:bg-cyan-400'
+            }`}
+          >
+            {busy ? 'Updating…' : settings.ttl_enforcement_enabled ? 'Turn Off' : 'Turn On'}
+          </button>
+        </div>
+      )}
     </Section>
   )
 }

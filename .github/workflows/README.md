@@ -45,6 +45,25 @@ state-machine sweeps server-side and returns `to_pause`/`to_destroy` lists;
 the workflow's job is just dispatching `pause.yml`/`destroy.yml` for
 whatever comes back — no state-machine logic lives in the shell script.
 
+## Two independent ways to stop TTL enforcement — don't confuse them
+
+**`PATCH /settings/ttl-enforcement`** (super_admin only, via the Settings
+page or the API directly — see `routers/settings.py`) is a DB-backed
+runtime toggle. With it off, `process_ttl()` returns immediately with
+nothing to do — `ttl-cron.yml` still calls the API successfully every 15
+minutes and gets a clean, honest empty result back. Use this for a
+temporary pause (a demo, an interview walkthrough, a cost-sensitive week)
+**while the platform host is still up and reachable**.
+
+**`vars.TTL_CRON_ENABLED`** (a GitHub Actions repository _variable_, not a
+secret — `Settings → Secrets and variables → Actions → Variables`) is a
+job-level `if:` guard in `ttl-cron.yml` itself. Set it to `"false"` and the
+whole job — including the API call — is skipped, showing as a clean grey
+"skipped" run instead of a red failure. Use this once the platform host is
+**genuinely, permanently decommissioned** and there's no API left to call
+at all — the DB toggle can't help there, since it still requires a
+successful HTTP round-trip to report "disabled."
+
 ## Current status: AWS bootstrap not done yet
 
 None of the secrets above are set yet — the AWS account side (Section 2.1

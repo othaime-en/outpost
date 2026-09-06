@@ -12,6 +12,19 @@ permissions:
 jobs:
   enforce-ttl:
     runs-on: ubuntu-latest
+    # Full-shutdown guard — independent of the DB-backed toggle (PATCH
+    # /settings/ttl-enforcement, see routers/settings.py). That toggle
+    # still requires this workflow to successfully CALL the API (it just
+    # gets back "nothing to do" while off) — it does nothing if the API
+    # itself is unreachable, which is exactly the state once the platform
+    # host is torn down for good. This variable controls whether the
+    # workflow attempts to call the API at all. Once outpost-api.<domain>
+    # is genuinely, permanently decommissioned, set TTL_CRON_ENABLED to
+    # "false" under Settings -> Secrets and variables -> Actions ->
+    # Variables to get a clean "skipped" status every run — grey, not red
+    # — with zero API calls attempted. Unset (the default) behaves as
+    # "true".
+    if: vars.TTL_CRON_ENABLED != 'false'
     steps:
       - name: Preflight — check required secrets
         # This workflow runs on a schedule, so unlike provision.yml/destroy.yml
