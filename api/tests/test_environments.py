@@ -1347,6 +1347,98 @@ class TestProcessTTL:
         assert env.pause_expiry_warning_sent_at == first_sent_at  # unchanged — not resent
 
 
+class TestProcessTTLWithEnforcementDisabled:
+    """
+    PATCH /settings/ttl-enforcement (routers/settings.py) lets a
+    super_admin turn off the state machine process_ttl() drives. These
+    tests exercise process_ttl() itself with the toggle off — the toggle
+    endpoint's own request/response/RBAC/audit behavior is covered in
+    test_settings.py, not here.
+    """
+
+    def _disable_enforcement(self, client: TestClient, super_admin_token: str) -> None:
+        response = client.patch(
+            "/settings/ttl-enforcement",
+            json={"enabled": False},
+            headers={"Authorization": f"Bearer {super_admin_token}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["ttl_enforcement_enabled"] is False
+
+    def test_disabled_returns_empty_result_without_error(
+        self, client: TestClient, super_admin_token: str,
+    ):
+        self._disable_enforcement(client, super_admin_token)
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        assert response.json() == {
+            "transitioned_to_expiring": [],
+            "to_pause": [],
+            "to_destroy": [],
+        }
+
+    def test_disabled_does_not_transition_expired_running_environment(
+        self, client: TestClient, super_admin_token: str, member_user, test_team, make_environment, db_session,
+    ):
+        """The core guarantee: with enforcement off, an environment that
+        WOULD otherwise expire is left completely alone — no DB mutation,
+        no audit row, nothing torn down while the toggle is off."""
+        self._disable_enforcement(client, super_admin_token)
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=past,
+        )
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert response.status_code == 200
+        assert str(env.id) not in response.json()["transitioned_to_expiring"]
+
+        db_session.refresh(env)
+        assert env.status == "RUNNING"  # untouched
+        assert env.expiring_since is None
+
+        audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.environment_id == env.id, AuditLog.action == "ENV_EXPIRING")
+            .first()
+        )
+        assert audit is None
+
+    def test_still_requires_callback_secret_while_disabled(self, client: TestClient, super_admin_token: str):
+        """Disabling enforcement changes what process_ttl() does, not who's
+        allowed to call it — require_callback_secret still applies."""
+        self._disable_enforcement(client, super_admin_token)
+        assert client.post("/environments/process-ttl").status_code == 403
+
+    def test_re_enabling_resumes_normal_sweeps(
+        self, client: TestClient, super_admin_token: str, member_user, test_team, make_environment, db_session,
+    ):
+        self._disable_enforcement(client, super_admin_token)
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        env = make_environment(
+            team_id=test_team.id, created_by=member_user.id, status="RUNNING", expires_at=past,
+        )
+        client.post("/environments/process-ttl", headers=_callback_auth())
+        db_session.refresh(env)
+        assert env.status == "RUNNING"  # still untouched while disabled
+
+        re_enable = client.patch(
+            "/settings/ttl-enforcement",
+            json={"enabled": True},
+            headers={"Authorization": f"Bearer {super_admin_token}"},
+        )
+        assert re_enable.json()["ttl_enforcement_enabled"] is True
+
+        response = client.post("/environments/process-ttl", headers=_callback_auth())
+        assert str(env.id) in response.json()["transitioned_to_expiring"]
+
+        db_session.refresh(env)
+        assert env.status == "EXPIRING"
+
+
 class TestRunbook:
     def test_requires_auth(self, client: TestClient):
         assert client.get(f"/environments/{uuid.uuid4()}/runbook").status_code == 401
