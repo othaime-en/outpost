@@ -1,6 +1,6 @@
 """add_platform_settings
 
-Revision ID: b6a1c8e3f9d2
+Revision ID: e921c8e3f9d2
 Revises: e91f4a7c3b56
 Create Date: 2026-09-05 00:00:00.000000
 
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 # revision identifiers, used by Alembic.
-revision: str = "b6a1c8e3f9d2"
+revision: str = "e921c8e3f9d2"
 down_revision: Union[str, None] = "e91f4a7c3b56"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
