@@ -218,7 +218,7 @@ from app.schemas.environment import (
     ProcessTTLTarget,
     RunbookResponse,
 )
-from app.services import cost, notifications, terraform
+from app.services import cost, notifications, platform_settings, terraform
 from app.services import runbook as runbook_service
 
 router = APIRouter()
@@ -412,7 +412,22 @@ def process_ttl(db: Session = Depends(get_db), _=Depends(require_callback_secret
 
     Supersedes GET /environments/expired — see that endpoint's now-updated
     docstring.
+
+    TTL ENFORCEMENT TOGGLE — A super_admin can flip enforcement off via
+    PATCH /settings/ttl-enforcement (routers/settings.py) — e.g. once this
+    project's platform host is no longer running, or just for a temporary
+    pause (a demo, an interview walkthrough). When off, this function
+    returns immediately with all three lists empty, running none of the
+    sweeps below. That's a deliberate no-op, not an error: ttl-cron.yml
+    still gets a clean 200 every 15 minutes instead of accumulating
+    failures for a state it was put into on purpose, and nothing gets
+    expired/paused/destroyed while the toggle is off. See
+    app/services/platform_settings.py for the (fail-open) default if the
+    underlying setting row is ever missing.
     """
+    if not platform_settings.is_ttl_enforcement_enabled(db):
+        return ProcessTTLResponse(transitioned_to_expiring=[], to_pause=[], to_destroy=[])
+
     now = datetime.now(timezone.utc)
     notifier = notifications.get_notification_service()
 
