@@ -15,6 +15,7 @@ import app.models.environment   # noqa: F401
 import app.models.audit_log     # noqa: F401
 import app.models.cost_snapshot # noqa: F401
 import app.models.runbook       # noqa: F401
+import app.models.platform_settings  # noqa: F401
 
 # Alembic Config object — provides access to values in alembic.ini
 config = context.config
