@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth, environments, audit, teams, users, health
+from app.routers import settings as settings_router
 from app.services import health_checker
 from app.config import settings
 
@@ -64,4 +65,5 @@ app.include_router(environments.router, prefix="/environments", tags=["environme
 app.include_router(audit.router,        prefix="/audit",        tags=["audit"])
 app.include_router(teams.router,        prefix="/teams",        tags=["teams"])
 app.include_router(users.router,        prefix="/users",        tags=["users"])
+app.include_router(settings_router.router, prefix="/settings",  tags=["settings"])
 app.include_router(health.router,                               tags=["health"])
