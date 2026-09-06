@@ -29,10 +29,12 @@ from app.database import SessionLocal            # noqa: E402
 from app.middleware.auth import JWT_ALGORITHM    # noqa: E402
 from app.models.audit_log import AuditLog        # noqa: E402
 from app.models.environment import Environment   # noqa: E402
+from app.models.platform_settings import PlatformSettings  # noqa: E402
 from app.models.runbook import Runbook           # noqa: E402
 from app.models.team import Team                 # noqa: E402
 from app.models.team_membership import TeamMembership  # noqa: E402
 from app.models.user import User                 # noqa: E402
+from app.services.platform_settings import TTL_ENFORCEMENT_KEY  # noqa: E402
 
 
 @pytest.fixture
@@ -43,6 +45,46 @@ def client() -> TestClient:
     """
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def reset_platform_settings(db_session):
+    """
+    platform_settings is a genuine singleton table (one row per key,
+    shared across the whole DB) — not something scoped to a fixture-
+    created user/team/environment that db_session's teardown already
+    tracks and deletes. Without this, TestToggleTTLEnforcement flipping
+    ttl_enforcement_enabled to False would leak into whatever test happens
+    to run next (e.g. a TestProcessTTL sweep test silently running with
+    enforcement disabled) — autouse=True and not test-specific, because
+    that leakage risk exists for every test file, not just
+    test_settings.py.
+
+    Depends on db_session (even though it doesn't use db_session's own
+    session object) purely for TEARDOWN ORDERING: PATCH /settings/
+    ttl-enforcement sets platform_settings.updated_by_id to whichever
+    super_admin_user made the call, and that FK has no ON DELETE
+    CASCADE/SET NULL. If this fixture's own cleanup ran after
+    db_session's (which deletes every fixture-created user), db_session's
+    teardown would hit a ForeignKeyViolation trying to delete a still-
+    referenced user. Depending on db_session forces pytest's LIFO
+    teardown order to clear updated_by_id here FIRST.
+    """
+    session = SessionLocal()
+
+    def _reset():
+        row = session.query(PlatformSettings).filter(PlatformSettings.key == TTL_ENFORCEMENT_KEY).first()
+        if row is not None:
+            row.value = True
+            row.updated_by_id = None
+        else:
+            session.add(PlatformSettings(key=TTL_ENFORCEMENT_KEY, value=True))
+        session.commit()
+
+    _reset()
+    yield
+    _reset()
+    session.close()
 
 
 @pytest.fixture
