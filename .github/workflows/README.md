@@ -28,11 +28,11 @@ Terraform" section for the full rationale). So they only need
 `AWS_ROLE_ARN` + the two `CALLBACK_*` secrets, not `TF_STATE_BUCKET` /
 `TF_LOCK_TABLE` / `SHARED_VPC_ID`.
 
-**IAM policy note:** whatever policy gets attached to `AWS_ROLE_ARN` during
-the eventual bootstrap needs `ecs:UpdateService`, `ecs:DescribeServices`,
-`rds:StopDBInstance`, `rds:StartDBInstance`, and `rds:DescribeDBInstances`
-in addition to whatever `terraform apply`/`destroy` already require — easy
-to miss since provision/destroy never needed these specific actions.
+**IAM policy note:** the policy attached to `AWS_ROLE_ARN` includes
+`ecs:UpdateService`, `ecs:DescribeServices`, `rds:StopDBInstance`,
+`rds:StartDBInstance`, and `rds:DescribeDBInstances` in addition to what
+`terraform apply`/`destroy` need — confirmed working via `pause`/`resume`
+against real AWS.
 
 ## `ttl-cron.yml` now calls `/process-ttl`, not `/expired`
 
@@ -64,29 +64,21 @@ whole job — including the API call — is skipped, showing as a clean grey
 at all — the DB toggle can't help there, since it still requires a
 successful HTTP round-trip to report "disabled."
 
-## Current status: AWS bootstrap not done yet
+## Current status: AWS bootstrap complete, all secrets set
 
-None of the secrets above are set yet — the AWS account side (Section 2.1
-bootstrap: VPC, S3 bucket, DynamoDB table, OIDC provider, IAM role, shared
-ECS cluster) is still pending. Terraform itself has only been validated
-locally (`terraform validate` / `plan` against local state), not applied to
-real AWS infra, and pause/resume haven't been exercised against real ECS/
-RDS resources either.
+All six secrets above are set in GitHub Actions. Terraform has been applied
+against real AWS, and provision, pause, resume, TTL extension, and destroy
+have all been exercised end-to-end against live ECS/RDS resources.
 
-To avoid `ttl-cron.yml` failing every 15 minutes (it's the only one of the
-five with a `schedule` trigger — the other four are `workflow_dispatch`-only,
-so they're inert until someone runs them manually), all five workflows
-start with a **preflight step** that checks for the required secrets and
-exits cleanly with an `::notice::` annotation if any are missing, instead of
-letting a downstream step (like the OIDC role-assume) fail with a confusing
-error. Runs will show green with the remaining steps skipped, not red.
-
-**Once the AWS bootstrap is done and the secrets above are set, no code
-change is needed** — the preflight step will detect they're present and the
-workflows will run normally. (The preflight step comment in each file says
-"remove this step once configured" — that's optional cleanup, not required;
-leaving it in is harmless and makes future secret rotation/loss fail the
-same graceful way.)
+All five workflows still start with a **preflight step** that checks for
+the required secrets and exits cleanly with an `::notice::` annotation if
+any are missing, instead of letting a downstream step (like the OIDC
+role-assume) fail with a confusing error. It's no longer covering for a
+missing bootstrap — it's now a cheap guard against a secret getting rotated
+out or accidentally deleted, so a future run degrades to a clean grey
+"skipped" instead of a red failure. (The preflight step comment in each
+file says "remove this step once configured" — still optional; there's no
+real reason to remove it now.)
 
 ## Notes specific to this repo's Terraform (see `terraform/README.md`)
 
