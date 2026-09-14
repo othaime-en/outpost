@@ -1069,10 +1069,10 @@ def get_cost_snapshots(
     Reads whatever actual-cost rows exist for this environment.
 
     This is deliberately just the read side. Writing rows here requires a
-    background job that calls AWS Cost Explorer (tagged by env_id) and is
-    blocked on the AWS bootstrap being complete — see cost_snapshot.py's
-    docstring. Until that job exists, this will always return `[]`, and the
-    UI's Cost tab already has a documented fallback message for that case.
+    background job that calls AWS Cost Explorer (tagged by env_id) — that
+    job hasn't been built yet (see cost_snapshot.py's docstring). Until it exists, this will
+    always return `[]`, and the UI's Cost tab already has a documented
+    fallback message for that case.
     """
     env = _get_env_or_404(db, env_id)
     _assert_team_visibility(env, current_user)
