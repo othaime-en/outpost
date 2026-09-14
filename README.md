@@ -38,9 +38,9 @@ docker compose up
 API comes up on `:8000`, UI on `:3000`. `docker compose exec api alembic
 upgrade head` to apply migrations.
 
-The Terraform/AWS side needs a one-time bootstrap (S3 state bucket, DynamoDB
-lock table, shared ECS cluster, OIDC role) before any environment can
-actually provision — see `terraform/README.md`.
+The Terraform/AWS side has already been bootstrapped (S3 state bucket,
+DynamoDB lock table, shared ECS cluster, OIDC role) — see
+`terraform/README.md` if you're standing up a separate account.
 
 ## CLI
 
@@ -69,5 +69,6 @@ A few decisions worth knowing before reading the code:
 ## Status
 
 Core platform (auth, RBAC, provisioning API, Terraform modules, GitHub
-Actions workflows, web UI) is built and tested. Live AWS provisioning is
-blocked on the one-time account bootstrap described above.
+Actions workflows, web UI) is built, tested, and deployed. The full
+lifecycle — provision, pause, resume, extend TTL, destroy — has been
+verified end-to-end against real AWS.
