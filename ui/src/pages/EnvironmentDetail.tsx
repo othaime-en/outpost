@@ -377,9 +377,9 @@ function CostTab({ env }: { env: Environment }) {
           </div>
           {/*
             GET /environments/{id}/cost-snapshots is a real endpoint now —
-            it just has nothing to return until a background job pulls data
-            from AWS Cost Explorer, which is blocked on the AWS bootstrap. This
-            fallback covers that empty-but-working state, not a missing route.
+            it just has nothing to return until the Cost Explorer background
+            job is built. This fallback covers that empty-but-working
+            state, not a missing route
           */}
           <div className="mt-1 text-xs text-gray-400 dark:text-gray-600">
             {latest
