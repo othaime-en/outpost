@@ -23,22 +23,39 @@ api_key: <long-lived, set by `auth key generate`>
 ```
 
 Every command except `auth login`/`auth key generate` uses `api_key` via
-the `X-API-Key` header. You only need to do the `auth` steps once per
-machine — the key doesn't expire on its own.
+the `X-API-Key` header. You only need to log in once per machine — the
+key doesn't expire on its own.
 
 ## Auth
 
 ```bash
-outpost auth login                 # opens your browser to GitHub OAuth
-# ... complete login, copy the token shown on the frontend's /callback page ...
-# Paste the token shown after login completes: <paste here>
-
-outpost auth key generate          # exchanges that token for a permanent API key
+outpost auth login
 ```
 
-`login` only gets you a 15-minute bearer token — just long enough to run
-`key generate` once. If you wait too long between the two, `key generate`
-will tell you to log in again rather than failing silently.
+That's the whole flow. It opens your browser, you approve on GitHub, and
+the tab redirects straight back to a tiny local server the CLI is already
+listening on — no token to find or paste. Under the hood this is the same
+"loopback redirect" pattern `gh auth login` and VS Code use.
+
+If you're running the CLI over SSH — i.e. the browser that can complete
+login is on a different machine than the one running `outpost` — the
+loopback trick can't reach you, so use:
+
+```bash
+outpost auth login --manual
+```
+
+which prints a URL to open on _any_ device and prompts you to paste the
+token back. This talks to a dedicated page built for exactly this, not
+the web UI's own login screen — the web app's `/callback` route
+intentionally never displays the token (it's consumed and scrubbed from
+the URL as part of the browser session's own login, by design), so it
+can't double as a copy-paste source.
+
+Either way, logging in also generates your API key in the same step — no
+separate command needed. `outpost auth key generate` still exists, for
+rotating your key later from an existing, still-fresh login token, but
+you won't need it for a first-time setup.
 
 ## Teams
 

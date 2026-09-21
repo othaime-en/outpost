@@ -23,34 +23,21 @@ REFRESH-TOKEN FLOW (see services/refresh_tokens.py for the full design):
     since the whole point of /auth/refresh is re-establishing a session
     when the access token is ALREADY gone, and /auth/logout must still
     work when it is too.
-
-MULTI-TEAM CHANGE — _create_jwt: the payload now carries ONLY {user_id, exp}.
-It used to also embed team_id and role, but get_current_user's JWT decode
-path never actually read those two claims (only user_id) — so removing them
-changes nothing about how requests are authorized, only what's sitting
-inside the token. Worth removing anyway, for two reasons:
-
-  1. Under multi-team, "team_id" is no longer well-defined for a user with
-     zero, or more than one, team — embedding a single value would just be
-     wrong on its face for those users.
-  2. Even where it happened to be accurate, embedding authorization data in
-     a token means a role change or team removal wouldn't take effect until
-     the token expired. Authorization is resolved fresh from the DB on
-     every request instead (see middleware/auth.py, rbac.py) — a
-     super_admin demoting someone takes effect on that user's very next
-     request, not after a token refresh.
 """
 
 from __future__ import annotations
 
+import html
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from passlib.hash import bcrypt
 from sqlalchemy.orm import Session, joinedload
 
@@ -70,6 +57,77 @@ GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_API = "https://api.github.com/user"
 GITHUB_EMAILS_API = "https://api.github.com/user/emails"
+
+# --- CLI login handoff -----------------------------------------------------
+#
+# `state` is opaque to GitHub — it round-trips whatever we send unchanged
+# from GET /auth/github to GET /auth/github/callback — so it's the only
+# channel available to tell the callback "this login came from the CLI,
+# not the browser SPA" across the external hop through GitHub.
+#
+# Two CLI-originated values are recognized, everything else (including no
+# state at all) falls through to the original SPA fragment-redirect
+# unchanged — this is purely additive, the web UI's login path is
+# untouched:
+#
+#   cli:<port>   — the default `outpost auth login` flow. The CLI starts a
+#                  short-lived HTTP server on 127.0.0.1:<port> before
+#                  opening the browser, and expects the token delivered
+#                  there directly (RFC 8252's "loopback interface
+#                  redirection" pattern — the same one used by `gh auth
+#                  login`, `gcloud auth login`, VS Code, etc). Restricting
+#                  the redirect host to a hardcoded 127.0.0.1 (only the
+#                  port is attacker-influenceable) is what makes this safe
+#                  without needing to sign or otherwise validate `state`:
+#                  the worst a forged port does is hand a token to some
+#                  other *local* process on the same machine the browser
+#                  is running on, which is already a fully-compromised-
+#                  device scenario outside this flow's threat model.
+#
+#   cli-manual   — for `outpost auth login --manual`, i.e. a CLI running
+#                  on a different machine than the browser (SSH sessions,
+#                  headless boxes) where a loopback redirect can't reach
+#                  it. Renders a small standalone page with the token
+#                  visible and copyable. This does NOT reuse the SPA's
+#                  /callback route: AuthCallback.tsx reads the token from
+#                  the fragment, calls history.replaceState to scrub it,
+#                  and redirects into the dashboard within the same
+#                  render pass specifically so it never lingers in browser
+#                  history — there is no way to also have it sit still
+#                  long enough to read, by design. A separate,
+#                  purpose-built page is the fix, not a flag bolted onto
+#                  that one.
+CLI_LOOPBACK_STATE = re.compile(r"^cli:(\d{4,5})$")
+CLI_MANUAL_STATE = "cli-manual"
+_MIN_LOOPBACK_PORT = 1024
+_MAX_LOOPBACK_PORT = 65535
+
+
+def _cli_manual_token_page(token: str) -> str:
+    """Self-contained HTML for the `cli-manual` login path — no dependency
+    on the frontend build, so this keeps working even if the SPA is down
+    or not deployed at all."""
+    safe_token = html.escape(token)
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Outpost CLI login</title>
+<style>
+  body {{ font-family: -apple-system, sans-serif; max-width: 640px; margin: 64px auto; padding: 0 20px; color: #1a1a1a; }}
+  code {{ display: block; background: #f4f4f5; border: 1px solid #ddd; border-radius: 6px; padding: 14px 16px;
+          font-size: 13px; word-break: break-all; margin: 16px 0; }}
+  button {{ background: #111; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; }}
+  button:hover {{ background: #333; }}
+  .hint {{ color: #666; font-size: 13px; }}
+</style>
+</head>
+<body>
+  <h2>Login successful</h2>
+  <p>Copy this token and paste it into your terminal:</p>
+  <code id="token">{safe_token}</code>
+  <button onclick="navigator.clipboard.writeText(document.getElementById('token').textContent)">Copy to clipboard</button>
+  <p class="hint">This token expires in a few minutes — paste it back into <code style="display:inline;padding:2px 6px">outpost auth login --manual</code> right away.</p>
+</body>
+</html>"""
 
 
 def _create_jwt(user: User) -> str:
@@ -124,8 +182,16 @@ def _profile_response(user: User, db: Session) -> UserProfile:
 
 
 @router.get("/github")
-def github_login():
-    """Redirect the browser to GitHub's OAuth authorize page."""
+def github_login(state: Optional[str] = None):
+    """
+    Redirect the browser to GitHub's OAuth authorize page.
+
+    `state` is passed straight through to GitHub, which hands it back
+    unchanged on `/github/callback` — see that constants block above for
+    the two CLI-specific values this can carry. Anything else (or
+    nothing) is also passed through harmlessly; the callback only acts on
+    the two values it recognizes.
+    """
     if not settings.github_client_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -136,11 +202,13 @@ def github_login():
         f"&redirect_uri={settings.github_redirect_uri}"
         f"&scope=user:email"
     )
+    if state:
+        params += f"&state={quote(state)}"
     return RedirectResponse(f"{GITHUB_AUTHORIZE_URL}?{params}")
 
 
 @router.get("/github/callback")
-def github_callback(code: str, db: Session = Depends(get_db)):
+def github_callback(code: str, state: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Handle the GitHub OAuth redirect: exchange `code`, resolve/create the
     local user, issue our JWT + a refresh token, and hand the browser
@@ -149,6 +217,15 @@ def github_callback(code: str, db: Session = Depends(get_db)):
     the refresh token travels as an httpOnly cookie set directly on this
     RedirectResponse, which the browser stores and silently re-attaches
     to future POST /auth/refresh calls without any JS ever touching it.
+
+    CLI LOGIN HANDOFF: if `state` matches `cli:<port>` or `cli-manual`
+    (see the constants block above), the browser is redirected somewhere
+    other than the frontend instead — a local loopback server, or a
+    standalone token-display page, respectively. This is what makes
+    `outpost auth login` work at all: the SPA's own /callback route
+    deliberately never displays the token (it's consumed and scrubbed
+    from the URL within one render, by design, for the browser session's
+    own security), so a CLI login can't ride on that route.
     """
     token_resp = httpx.post(
         GITHUB_TOKEN_URL,
@@ -195,6 +272,23 @@ def github_callback(code: str, db: Session = Depends(get_db)):
 
     jwt_token = _create_jwt(user)
     raw_refresh_token = refresh_tokens.issue(db, user)
+
+    loopback_match = CLI_LOOPBACK_STATE.match(state) if state else None
+    if loopback_match:
+        port = int(loopback_match.group(1))
+        if _MIN_LOOPBACK_PORT <= port <= _MAX_LOOPBACK_PORT:
+            response = RedirectResponse(f"http://127.0.0.1:{port}/callback?token={jwt_token}")
+            refresh_tokens.set_cookie(response, raw_refresh_token)
+            return response
+        # Out-of-range port on an otherwise-well-formed `cli:` state: fall
+        # through to the normal SPA redirect below rather than erroring —
+        # worst case is the browser lands on the dashboard instead of the
+        # CLI, not a broken login.
+
+    if state == CLI_MANUAL_STATE:
+        response = HTMLResponse(_cli_manual_token_page(jwt_token))
+        refresh_tokens.set_cookie(response, raw_refresh_token)
+        return response
 
     response = RedirectResponse(f"{settings.frontend_url}/callback#token={jwt_token}")
     refresh_tokens.set_cookie(response, raw_refresh_token)
