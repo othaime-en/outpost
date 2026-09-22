@@ -16,8 +16,12 @@ provisioning pipeline, a React dashboard, and a CLI.
    instance, then calls back to the API with the outputs.
 4. The environment moves to `RUNNING`. A runbook is generated automatically —
    connection info, log commands, TTL reminder.
-5. When the TTL expires (or you destroy it manually), Terraform tears
-   everything down and the record is kept for the audit log.
+5. When the TTL expires, it doesn't just vanish: there's a 24h grace period
+   (`EXPIRING`) where nothing changes, then it's paused (`PAUSED` — ECS
+   scaled to 0, RDS stopped, still reversible) before a final destroy a week
+   later if nobody resumes it. Destroy manually at any point and it skips
+   straight to teardown. Either way, Terraform tears everything down and the
+   record is kept for the audit log.
 
 Every AWS resource is tagged with `env_id`, `team`, and `ttl`, which is how
 cost tracking and targeted destroys work.
@@ -47,9 +51,17 @@ DynamoDB lock table, shared ECS cluster, OIDC role) — see
 ```bash
 pip install -e ./cli
 outpost auth login
-outpost env create --name my-feature --type dev --ttl 24
+outpost teams list
+outpost env create --name my-feature --team platform-team --type dev --ttl 24
 outpost env list
+outpost env pause <env-id>
+outpost audit list
 ```
+
+`auth login` opens your browser and finishes automatically once GitHub
+redirects back — no token to copy or paste. Running it over SSH? Use
+`outpost auth login --manual` instead. See `cli/README.md` for the full
+command reference.
 
 ## Why it's built this way
 
@@ -71,4 +83,6 @@ A few decisions worth knowing before reading the code:
 Core platform (auth, RBAC, provisioning API, Terraform modules, GitHub
 Actions workflows, web UI) is built, tested, and deployed. The full
 lifecycle — provision, pause, resume, extend TTL, destroy — has been
-verified end-to-end against real AWS.
+verified end-to-end against real AWS. The CLI is feature-complete
+(`env`, `audit`, `teams`, `auth`) and tested against a live Postgres-backed
+API instance; only PyPI/TestPyPI publishing is still outstanding.
